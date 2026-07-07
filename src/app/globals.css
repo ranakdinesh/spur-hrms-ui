@@ -3,24 +3,92 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --brand-theme: #588368;
+  --brand-primary: #588368;
+  --brand-secondary: #e87839;
+  --brand-tertiary: #f2b36d;
+  --brand-topbar: #fffaf4;
+  --brand-sidebar: #426b53;
+  --brand-font: var(--font-app), "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  --dashboard-bg: #f6f4ec;
+  --dashboard-bg-soft: #fffaf4;
+  --dashboard-bg-warm: #fff3e8;
+  --dashboard-bg-cool: #eef6f1;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-app);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--brand-font);
+}
+
+.hrms-brand-scope .bg-\[\#588368\],
+.hrms-brand-scope .hover\:bg-\[\#456d58\]:hover,
+.hrms-brand-scope .before\:bg-\[\#588368\]::before {
+  background-color: var(--brand-primary) !important;
+}
+
+.hrms-brand-scope .bg-\[\#2f6f7d\] {
+  background-color: var(--brand-tertiary) !important;
+}
+
+.hrms-brand-scope .bg-\[\#e87839\] {
+  background-color: var(--brand-secondary) !important;
+}
+
+.hrms-brand-scope .text-\[\#588368\],
+.hrms-brand-scope .hover\:text-\[\#588368\]:hover,
+.hrms-brand-scope .file\:text-\[\#588368\]::file-selector-button {
+  color: var(--brand-primary) !important;
+}
+
+.hrms-brand-scope .border-\[\#588368\],
+.hrms-brand-scope .hover\:border-\[\#588368\]:hover,
+.hrms-brand-scope .focus\:border-\[\#588368\]:focus,
+.hrms-brand-scope .focus-within\:border-\[\#588368\]:focus-within {
+  border-color: var(--brand-primary) !important;
+}
+
+.hrms-brand-scope .accent-\[\#588368\] {
+  accent-color: var(--brand-primary) !important;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+a,
+button {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+button:hover,
+a:hover {
+  transform: translateY(-1px);
+}
+
+@keyframes setika-card-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.setika-card-rise {
+  animation: setika-card-rise 360ms ease both;
 }

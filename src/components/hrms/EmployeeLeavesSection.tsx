@@ -1,0 +1,415 @@
+"use client";
+
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+
+import type { BranchTenantOption } from "@/components/hrms/BranchesSection";
+import { apiRequest } from "@/lib/api";
+
+type Employee = { user_id: string; firstname: string; lastname?: string | null; employee_code?: string | null; probation_status?: string; probation_end_date?: string | null; is_payroll_staff?: boolean };
+type LeaveType = { id: string; name: string; shortcode?: string | null; is_enabled?: boolean };
+type FinancialYear = { id: string; name: string; is_active: boolean };
+type LeaveBalance = { id?: string; leave_type_id: string; leave_type_name?: string; total_days: number; used_days: number; pending_days: number; balance_days: number };
+type Leave = { id: string; user_id: string; leave_type_id: string; fy_id: string; start_date: string; end_date: string; start_day_type: DayType; end_day_type: DayType; days: number; reason?: string | null; status: string; is_sandwich: boolean; applied_date: string };
+type EmployeeDashboard = { leave?: { balances: Array<LeaveBalance & { leave_type_name: string }>; recent_requests: Leave[] } | null };
+type DayType = "fullday" | "firsthalf" | "secondhalf";
+type DurationMode = "full" | "firsthalf" | "secondhalf" | "custom";
+
+const dayTypeLabels: Record<DayType, string> = {
+  firsthalf: "First half",
+  fullday: "Full day",
+  secondhalf: "Second half",
+};
+
+function employeeLabel(item?: Employee) {
+  if (!item) return "-";
+  return `${item.firstname} ${item.lastname || ""}`.trim() || item.employee_code || item.user_id;
+}
+
+function tenantSortValue(tenant: BranchTenantOption) {
+  return `${tenant.name} ${tenant.code}`.toLowerCase();
+}
+
+function isEmployeeOnProbation(employee?: Employee) {
+  if (!employee || !["probation", "extended"].includes(employee.probation_status || "")) return false;
+  if (!employee.probation_end_date) return true;
+  const end = new Date(employee.probation_end_date);
+  return Number.isNaN(end.getTime()) || end >= new Date();
+}
+
+function isEarnedLeave(type: LeaveType) {
+  const shortcode = (type.shortcode || "").trim().toLowerCase();
+  const name = type.name.trim().toLowerCase();
+  return shortcode === "el" || shortcode === "earnleave" || name.includes("earned leave") || name.includes("earn leave");
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  return new Intl.DateTimeFormat("en", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
+function formatDays(value = 0) {
+  return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 1 }).format(value);
+}
+
+function parseLocalDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function estimateLeaveDays(startDate: string, endDate: string, startDayType: DayType, endDayType: DayType) {
+  const start = parseLocalDate(startDate);
+  const end = parseLocalDate(endDate);
+  if (!start || !end || end < start) return null;
+  if (start.getTime() === end.getTime()) {
+    if (startDayType === "fullday" || endDayType === "fullday") return 1;
+    return startDayType === endDayType ? 0.5 : 1;
+  }
+  const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+  const startUnits = startDayType === "fullday" ? 1 : 0.5;
+  const endUnits = endDayType === "fullday" ? 1 : 0.5;
+  return Math.max(0.5, days - 2 + startUnits + endUnits);
+}
+
+export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
+  const sortedTenants = useMemo(() => [...tenants].sort((a, b) => tenantSortValue(a).localeCompare(tenantSortValue(b))), [tenants]);
+  const [selectedTenantID, setSelectedTenantID] = useState("");
+  const basePath = isSuperAdmin && selectedTenantID ? `/hrms/tenants/${selectedTenantID}` : "/hrms";
+  const canLoad = !isSuperAdmin || Boolean(selectedTenantID);
+
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
+  const [financialYears, setFinancialYears] = useState<FinancialYear[]>([]);
+  const [balances, setBalances] = useState<LeaveBalance[]>([]);
+  const [leaves, setLeaves] = useState<Leave[]>([]);
+  const [selectedUser, setSelectedUser] = useState("");
+  const [selectedFY, setSelectedFY] = useState("");
+  const [durationMode, setDurationMode] = useState<DurationMode>("full");
+  const [form, setForm] = useState({ leave_type_id: "", start_date: "", end_date: "", start_day_type: "fullday" as DayType, end_day_type: "fullday" as DayType, reason: "" });
+  const [cancelRemarks, setCancelRemarks] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const selectedEmployee = useMemo(() => employees.find((item) => item.user_id === selectedUser), [employees, selectedUser]);
+  const probationBlocked = isSuperAdmin && isEmployeeOnProbation(selectedEmployee);
+  const typeByID = useMemo(() => new Map(leaveTypes.map((item) => [item.id, item])), [leaveTypes]);
+  const balanceByTypeID = useMemo(() => new Map(balances.map((item) => [item.leave_type_id, item])), [balances]);
+  const selectedBalance = form.leave_type_id ? balanceByTypeID.get(form.leave_type_id) : undefined;
+  const estimatedDays = useMemo(() => estimateLeaveDays(form.start_date, form.end_date, form.start_day_type, form.end_day_type), [form.end_date, form.end_day_type, form.start_date, form.start_day_type]);
+  const enabledLeaveTypes = useMemo(() => leaveTypes.filter((item) => item.is_enabled !== false), [leaveTypes]);
+  const leaveOptions = useMemo(() => {
+    if (isSuperAdmin) return enabledLeaveTypes;
+    if (enabledLeaveTypes.length > 0) return enabledLeaveTypes;
+    return balances.map((item) => ({ id: item.leave_type_id, name: item.leave_type_name || typeByID.get(item.leave_type_id)?.name || "Leave", is_enabled: true })).filter((item, index, list) => list.findIndex((other) => other.id === item.id) === index);
+  }, [balances, enabledLeaveTypes, isSuperAdmin, typeByID]);
+
+  const leaveTypeName = useCallback((leaveTypeID: string) => balanceByTypeID.get(leaveTypeID)?.leave_type_name || typeByID.get(leaveTypeID)?.name || leaveTypeID.slice(0, 8), [balanceByTypeID, typeByID]);
+
+  const loadSelfServiceData = useCallback(async () => {
+    const [dashboardData, leaveData, leaveTypeData] = await Promise.all([
+      apiRequest<EmployeeDashboard>("/hrms/dashboard/employee"),
+      apiRequest<Leave[]>("/hrms/leaves"),
+      apiRequest<LeaveType[]>("/hrms/leave-types"),
+    ]);
+    const dashboardBalances = dashboardData.leave?.balances || [];
+    const enabledTypes = leaveTypeData.filter((item) => item.is_enabled !== false);
+    const firstTypeID = enabledTypes[0]?.id || dashboardBalances[0]?.leave_type_id || "";
+    setBalances(dashboardBalances);
+    setLeaves(leaveData);
+    setLeaveTypes(leaveTypeData);
+    setForm((current) => ({ ...current, leave_type_id: current.leave_type_id || dashboardBalances.find((item) => item.balance_days > 0)?.leave_type_id || firstTypeID }));
+  }, []);
+
+  const loadAdminData = useCallback(async () => {
+    const [employeeData, leaveTypeData, fyData] = await Promise.all([
+      apiRequest<Employee[]>(`${basePath}/employees`),
+      apiRequest<LeaveType[]>(`${basePath}/leave-types`),
+      apiRequest<FinancialYear[]>(`${basePath}/financial-years`),
+    ]);
+    const nextUser = selectedUser || employeeData[0]?.user_id || "";
+    const nextFY = selectedFY || fyData.find((item) => item.is_active)?.id || fyData[0]?.id || "";
+    setEmployees(employeeData);
+    setLeaveTypes(leaveTypeData);
+    setFinancialYears(fyData);
+    setSelectedUser(nextUser);
+    setSelectedFY(nextFY);
+    setForm((current) => ({ ...current, leave_type_id: current.leave_type_id || leaveTypeData.find((item) => item.is_enabled !== false)?.id || "" }));
+  }, [basePath, selectedFY, selectedUser]);
+
+  const loadBase = useCallback(async () => {
+    if (!canLoad) return;
+    setLoading(true);
+    setError("");
+    try {
+      if (isSuperAdmin) {
+        await loadAdminData();
+      } else {
+        await loadSelfServiceData();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load leave request data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [canLoad, isSuperAdmin, loadAdminData, loadSelfServiceData]);
+
+  const loadEmployeeLeaveData = useCallback(async () => {
+    if (!canLoad) return;
+    try {
+      if (!isSuperAdmin) {
+        await loadSelfServiceData();
+        return;
+      }
+      if (!selectedUser) return;
+      const [balanceData, leaveData] = await Promise.all([
+        apiRequest<LeaveBalance[]>(`${basePath}/leave-balances?user_id=${selectedUser}`),
+        apiRequest<Leave[]>(`${basePath}/leaves?user_id=${selectedUser}`),
+      ]);
+      setBalances(balanceData);
+      setLeaves(leaveData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load employee leave data.");
+    }
+  }, [basePath, canLoad, isSuperAdmin, loadSelfServiceData, selectedUser]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadBase();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadBase]);
+
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    const timer = window.setTimeout(() => {
+      void loadEmployeeLeaveData();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isSuperAdmin, loadEmployeeLeaveData]);
+
+  function setDuration(nextMode: DurationMode) {
+    setDurationMode(nextMode);
+    setForm((current) => {
+      if (nextMode === "full") return { ...current, start_day_type: "fullday", end_day_type: "fullday" };
+      if (nextMode === "firsthalf") return { ...current, end_date: current.start_date || current.end_date, start_day_type: "firsthalf", end_day_type: "firsthalf" };
+      if (nextMode === "secondhalf") return { ...current, end_date: current.start_date || current.end_date, start_day_type: "secondhalf", end_day_type: "secondhalf" };
+      return current;
+    });
+  }
+
+  function setStartDate(value: string) {
+    setForm((current) => {
+      const nextEndDate = durationMode === "firsthalf" || durationMode === "secondhalf" || !current.end_date || current.end_date < value ? value : current.end_date;
+      return { ...current, start_date: value, end_date: nextEndDate };
+    });
+  }
+
+  async function submitLeave(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`${basePath}/leaves`, {
+        method: "POST",
+        body: {
+          ...form,
+          user_id: isSuperAdmin ? selectedUser || undefined : undefined,
+          fy_id: isSuperAdmin ? selectedFY || undefined : undefined,
+          reason: form.reason || undefined,
+        },
+      });
+      setMessage("Leave request submitted.");
+      setForm((current) => ({ ...current, reason: "" }));
+      if (isSuperAdmin) {
+        await loadEmployeeLeaveData();
+      } else {
+        await loadSelfServiceData();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to apply leave.");
+    }
+  }
+
+  async function cancelLeave(item: Leave) {
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`${basePath}/leaves/${item.id}/cancel`, {
+        method: "POST",
+        body: { user_id: isSuperAdmin ? item.user_id : undefined, remarks: cancelRemarks[item.id] || "Canceled by applicant" },
+      });
+      setMessage("Leave request canceled.");
+      if (isSuperAdmin) {
+        await loadEmployeeLeaveData();
+      } else {
+        await loadSelfServiceData();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel leave.");
+    }
+  }
+
+  if (isSuperAdmin && !selectedTenantID) {
+    return (
+      <section className="px-4 py-6 lg:px-6 lg:py-8">
+        <div className="rounded-2xl border border-[#dfe6e2] bg-white p-6 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.25em] text-[#588368]">Leave Requests</p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-[#111827]">Apply Leave</h1>
+          {tenantsError ? <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{tenantsError}</p> : null}
+          <select className="mt-5 h-12 w-full rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={tenantsLoading} onChange={(event) => setSelectedTenantID(event.target.value)} value={selectedTenantID}>
+            <option value="">Select tenant</option>
+            {sortedTenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name} ({tenant.code})</option>)}
+          </select>
+        </div>
+      </section>
+    );
+  }
+
+  const submitDisabled = loading || !form.leave_type_id || !form.start_date || !form.end_date || (isSuperAdmin && (!selectedUser || !selectedFY));
+
+  return (
+    <section className="px-4 py-6 lg:px-6 lg:py-8">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.25em] text-[#588368]">Leave Requests</p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-[#111827]">Apply Leave</h1>
+        </div>
+        <button className="rounded-xl border border-[#dbe8e1] bg-white px-5 py-3 text-sm font-black text-[#588368]" onClick={() => { void loadBase(); }} type="button">Refresh</button>
+      </div>
+
+      {message ? <p className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">{message}</p> : null}
+      {error ? <p className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</p> : null}
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.55fr)]">
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-xl font-black text-[#111827]">Leave Balance</h2>
+              {selectedBalance ? <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{formatDays(selectedBalance.balance_days)} available</span> : null}
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+              {balances.map((item) => {
+                const active = form.leave_type_id === item.leave_type_id;
+                return (
+                  <button className={`rounded-xl border p-4 text-left transition ${active ? "border-[#588368] bg-[#f3f8f5] shadow-sm" : "border-[#edf1ef] bg-white hover:border-[#b7c8bd]"}`} key={item.id || item.leave_type_id} onClick={() => setForm((current) => ({ ...current, leave_type_id: item.leave_type_id }))} type="button">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-black text-[#111827]">{item.leave_type_name || leaveTypeName(item.leave_type_id)}</p>
+                      <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-[#588368]">{formatDays(item.balance_days)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-[#6b7280]">
+                      <span>Total {formatDays(item.total_days)}</span>
+                      <span>Used {formatDays(item.used_days)}</span>
+                      <span>Pending {formatDays(item.pending_days)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {balances.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#6b7280]">No leave balance is available yet.</p> : null}
+          </div>
+
+          <form className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm" onSubmit={submitLeave}>
+            <h2 className="text-xl font-black text-[#111827]">New Request</h2>
+            {probationBlocked ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">Earned Leave is blocked until probation is completed.</p> : null}
+            <div className="mt-5 grid gap-4">
+              {isSuperAdmin ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={loading} onChange={(e) => setSelectedUser(e.target.value)} value={selectedUser}>
+                    <option value="">Select employee</option>
+                    {employees.map((item) => <option key={item.user_id} value={item.user_id}>{employeeLabel(item)}</option>)}
+                  </select>
+                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setSelectedFY(e.target.value)} value={selectedFY}>
+                    <option value="">Financial year</option>
+                    {financialYears.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                </div>
+              ) : null}
+
+              <label className="grid gap-2 text-sm font-black text-[#374151]">
+                Leave type
+                <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, leave_type_id: e.target.value }))} required value={form.leave_type_id}>
+                  <option value="">Select leave type</option>
+                  {leaveOptions.map((item) => <option disabled={probationBlocked && isEarnedLeave(item)} key={item.id} value={item.id}>{item.name}{probationBlocked && isEarnedLeave(item) ? " (blocked)" : ""}</option>)}
+                </select>
+              </label>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="grid gap-2 text-sm font-black text-[#374151]">
+                  From
+                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setStartDate(e.target.value)} required type="date" value={form.start_date} />
+                </label>
+                <label className="grid gap-2 text-sm font-black text-[#374151]">
+                  To
+                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={durationMode === "firsthalf" || durationMode === "secondhalf"} min={form.start_date || undefined} onChange={(e) => setForm((current) => ({ ...current, end_date: e.target.value }))} required type="date" value={form.end_date} />
+                </label>
+              </div>
+
+              <div className="grid gap-2">
+                <p className="text-sm font-black text-[#374151]">Duration</p>
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {[
+                    ["full", "Full day"],
+                    ["firsthalf", "First half"],
+                    ["secondhalf", "Second half"],
+                    ["custom", "Custom"],
+                  ].map(([mode, label]) => <button className={`h-11 rounded-xl border px-3 text-sm font-black ${durationMode === mode ? "border-[#588368] bg-[#588368] text-white" : "border-[#dbe8e1] bg-white text-[#374151]"}`} key={mode} onClick={() => setDuration(mode as DurationMode)} type="button">{label}</button>)}
+                </div>
+              </div>
+
+              {durationMode === "custom" ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-black text-[#374151]">
+                    Start day
+                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, start_day_type: e.target.value as DayType }))} value={form.start_day_type}>
+                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
+                    </select>
+                  </label>
+                  <label className="grid gap-2 text-sm font-black text-[#374151]">
+                    End day
+                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, end_day_type: e.target.value as DayType }))} value={form.end_day_type}>
+                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+
+              <textarea className="min-h-24 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, reason: e.target.value }))} placeholder="Reason" value={form.reason} />
+
+              <div className="rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-bold text-[#374151]">
+                {estimatedDays ? <span>Estimated {formatDays(estimatedDays)} day{estimatedDays === 1 ? "" : "s"} from {selectedBalance ? formatDays(selectedBalance.balance_days) : "0"} available.</span> : <span>Select dates to see the estimated duration.</span>}
+              </div>
+
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
+            </div>
+          </form>
+        </div>
+
+        <div className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black text-[#111827]">Recent Requests</h2>
+          <div className="mt-4 space-y-3">
+            {leaves.map((item) => (
+              <article className="rounded-xl border border-[#edf1ef] p-4" key={item.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black text-[#111827]">{leaveTypeName(item.leave_type_id)}</p>
+                    <p className="mt-1 text-xs font-bold text-[#6b7280]">{formatDate(item.start_date)} - {formatDate(item.end_date)} · {formatDays(item.days)} day{item.days === 1 ? "" : "s"}</p>
+                  </div>
+                  <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black capitalize text-[#588368]">{item.status}</span>
+                </div>
+                {item.reason ? <p className="mt-3 text-sm text-[#6b7280]">{item.reason}</p> : null}
+                {item.status === "pending" ? (
+                  <div className="mt-3 grid gap-2">
+                    <input className="h-10 rounded-lg border border-[#dbe8e1] px-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setCancelRemarks((current) => ({ ...current, [item.id]: e.target.value }))} placeholder="Cancel reason" value={cancelRemarks[item.id] || ""} />
+                    <button className="rounded-lg border border-red-100 bg-red-50 px-4 py-2 text-xs font-black text-red-700" onClick={() => void cancelLeave(item)} type="button">Cancel request</button>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+          {leaves.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#6b7280]">No leave requests found.</p> : null}
+        </div>
+      </div>
+    </section>
+  );
+}

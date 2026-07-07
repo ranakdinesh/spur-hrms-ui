@@ -1,65 +1,63 @@
-import Image from "next/image";
+import type { Metadata } from "next";
+import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 
-export default function Home() {
+import { CTASection, FeaturesSection, HeroSection, PricingSection, StartupSection, StatsSection, TestimonialsSection } from "@/components/Sections";
+import { PageShell } from "@/components/SiteChrome";
+import { PublicCareerSite } from "@/components/public/PublicCareerSite";
+import { careerMetadata, fetchPublicCareersForHost, PublicCareersFetchError, type PublicCareersPage } from "@/lib/public-careers";
+import { isTenantHost } from "@/lib/tenant-domain";
+
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const host = await currentHost();
+  if (!isTenantHost(host)) {
+    return { title: "Setika HRMS", description: "Setika HRMS" };
+  }
+  try {
+    const page = await fetchPublicCareersForHost(host, await currentProto());
+    return careerMetadata(page, "/");
+  } catch (err) {
+    if (err instanceof PublicCareersFetchError && err.status === 404) return {};
+    throw err;
+  }
+}
+
+export default async function Home() {
+  const host = await currentHost();
+  if (isTenantHost(host)) {
+    let page: PublicCareersPage;
+    try {
+      page = await fetchPublicCareersForHost(host, await currentProto());
+    } catch (err) {
+      if (err instanceof PublicCareersFetchError && err.status === 404) notFound();
+      throw err;
+    }
+    return <PublicCareerSite page={page} />;
+  }
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <PageShell>
+      <HeroSection />
+      <StatsSection overlap />
+      <FeaturesSection />
+      <PricingSection />
+      <StartupSection />
+      <TestimonialsSection />
+      <CTASection />
+    </PageShell>
   );
+}
+
+async function currentHost() {
+  const headerList = await headers();
+  return headerList.get("x-forwarded-host") || headerList.get("host") || "";
+}
+
+async function currentProto() {
+  const headerList = await headers();
+  const proto = headerList.get("x-forwarded-proto");
+  if (proto) return proto;
+  const host = headerList.get("host") || "";
+  return host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https";
 }
