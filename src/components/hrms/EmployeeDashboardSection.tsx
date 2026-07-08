@@ -427,6 +427,7 @@ function TodayAttendanceCard({
 }
 
 function LeaveSummaryCard({ leave, nextHoliday, onNavigate }: { leave?: EmployeeDashboard["leave"] | null; nextHoliday?: Celebration; onNavigate?: (section: string) => void }) {
+  const balanceRows = (leave?.balances || []).slice(0, 5);
   return (
     <section className="rounded-2xl border border-[#dfe7df] bg-white/95 p-4 shadow-[0_18px_50px_rgba(31,41,55,0.08)] sm:p-5">
       <div className="flex items-center justify-between">
@@ -443,7 +444,28 @@ function LeaveSummaryCard({ leave, nextHoliday, onNavigate }: { leave?: Employee
           <p className="mt-1 text-xs font-medium text-[#647067]">{nextHoliday ? dashboardEventTitle(nextHoliday) : "No upcoming holiday"}</p>
         </div>
       </div>
-      <p className="mt-4 text-sm font-medium text-[#647067]">{(leave?.available_days || 0) > 0 ? "Your current leave allocation is available for planning." : "No leave allocation is available yet."}</p>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        {balanceRows.map((item) => {
+          const usedPercent = item.total_days > 0 ? Math.min(100, Math.max(0, (item.used_days / item.total_days) * 100)) : 0;
+          return (
+            <button className="rounded-xl border border-[#dfe7df] bg-[#fbfdfb] p-3 text-left transition hover:border-[#b9cbbc] hover:bg-white" key={item.leave_type_id} onClick={() => onNavigate?.("leaves")} type="button">
+              <div className="flex items-start justify-between gap-3">
+                <p className="min-w-0 truncate text-sm font-black text-[#121a14]">{item.leave_type_name}</p>
+                <span className="rounded-full bg-[#e9f7ee] px-2.5 py-1 text-xs font-black text-[#237344]">{item.balance_days.toFixed(1)}</span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#eef2ee]">
+                <span className="block h-full rounded-full bg-[#588368]" style={{ width: `${usedPercent}%` }} />
+              </div>
+              <div className="mt-2 flex justify-between text-[11px] font-bold text-[#647067]">
+                <span>Used {item.used_days.toFixed(1)}</span>
+                <span>Pending {item.pending_days.toFixed(1)}</span>
+                <span>Total {item.total_days.toFixed(1)}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {balanceRows.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-medium text-[#647067]">No leave allocation is available yet.</p> : null}
       <button className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#dfe7df] bg-white px-4 py-3 text-sm font-black text-[#17231a] sm:w-auto sm:min-w-[220px]" onClick={() => onNavigate?.("leaves")} type="button">
         <Calendar className="h-4 w-4" />
         Apply Leave

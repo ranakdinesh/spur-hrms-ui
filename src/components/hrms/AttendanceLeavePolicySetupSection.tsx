@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarClock, ClipboardList, Layers3, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
+import { CalendarClock, ClipboardList, Layers3, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, Wand2 } from "lucide-react";
 
 import type { BranchTenantOption } from "@/components/hrms/BranchesSection";
 import { HrmsModal } from "@/components/hrms/HrmsModal";
@@ -155,6 +155,23 @@ type PreviewForm = {
   date: string;
 };
 
+type LeavePolicyWizardStep = "types" | "rules" | "review";
+
+type LeavePolicyWizardType = {
+  leave_type_id: string;
+  enabled: boolean;
+  entitlement_days: string;
+  grant_mode: string;
+  payroll_impact: string;
+  allow_half_day: boolean;
+  sandwich_enabled: boolean;
+  notice_required_after_days: string;
+  notice_days: string;
+  attachment_required_after_days: string;
+  insufficient_balance_action: string;
+  negative_balance_allowed: boolean;
+};
+
 const emptyPolicySetForm: PolicySetForm = {
   policy_kind: "attendance",
   code: "",
@@ -223,6 +240,12 @@ const tabs: Array<{ key: ActiveTab; label: string; icon: typeof ClipboardList }>
   { key: "assignments", label: "Assignments", icon: Layers3 },
   { key: "leave-rules", label: "Leave Rules", icon: CalendarClock },
   { key: "preview", label: "Preview", icon: SlidersHorizontal },
+];
+
+const leaveWizardSteps: Array<{ key: LeavePolicyWizardStep; label: string }> = [
+  { key: "types", label: "Leave Types" },
+  { key: "rules", label: "Rules" },
+  { key: "review", label: "Review" },
 ];
 
 const scopeOptions = [
@@ -422,6 +445,53 @@ function leaveRulePayload(form: LeaveRuleForm) {
   };
 }
 
+function leaveTypeKey(item: SetupOption) {
+  return `${item.shortcode || ""} ${item.code || ""} ${item.name || ""}`.toLowerCase();
+}
+
+function defaultWizardLeaveRule(item: SetupOption): LeavePolicyWizardType {
+  const key = leaveTypeKey(item);
+  const isSick = key.includes("sl") || key.includes("sick");
+  const isCasual = key.includes("cl") || key.includes("casual");
+  const isEarned = key.includes("el") || key.includes("earned") || key.includes("privilege");
+  const isCompOff = key.includes("co") || key.includes("comp");
+  const isLop = key.includes("lop") || key.includes("unpaid") || key.includes("loss of pay");
+  return {
+    leave_type_id: item.id,
+    enabled: isSick || isCasual || isEarned || isCompOff || isLop,
+    entitlement_days: isSick ? "7" : isCasual ? "7" : isEarned ? "18" : isCompOff || isLop ? "0" : "0",
+    grant_mode: isCompOff ? "comp_off_earning" : isLop ? "none" : "annual_financial_year",
+    payroll_impact: isLop ? "unpaid" : "paid",
+    allow_half_day: true,
+    sandwich_enabled: !isLop,
+    notice_required_after_days: isSick ? "3" : isCasual || isEarned ? "2" : "",
+    notice_days: isSick ? "0" : isCasual ? "2" : isEarned ? "7" : "0",
+    attachment_required_after_days: isSick ? "2" : "",
+    insufficient_balance_action: isLop ? "allow_unpaid" : "block",
+    negative_balance_allowed: false,
+  };
+}
+
+function wizardTypeToLeaveRuleForm(policySetID: string, item: LeavePolicyWizardType): LeaveRuleForm {
+  return {
+    ...emptyLeaveRuleForm,
+    policy_set_id: policySetID,
+    leave_type_id: item.leave_type_id,
+    grant_mode: item.grant_mode,
+    entitlement_days: item.entitlement_days,
+    allow_half_day: item.allow_half_day,
+    attachment_required_after_days: item.attachment_required_after_days,
+    sandwich_enabled: item.sandwich_enabled,
+    sandwich_include_weekly_off: true,
+    sandwich_include_public_holiday: true,
+    notice_required_after_days: item.notice_required_after_days,
+    notice_days: item.notice_days,
+    payroll_impact: item.payroll_impact,
+    insufficient_balance_action: item.insufficient_balance_action,
+    negative_balance_allowed: item.negative_balance_allowed,
+  };
+}
+
 export function AttendanceLeavePolicySetupSection({
   isSuperAdmin,
   tenants,
@@ -519,6 +589,9 @@ function PolicySetupWorkspace({ isSuperAdmin, onBack, tenant }: { isSuperAdmin: 
   const [policySetModal, setPolicySetModal] = useState<{ open: boolean; item: PolicySet | null }>({ open: false, item: null });
   const [assignmentModal, setAssignmentModal] = useState<{ open: boolean; item: PolicyAssignment | null }>({ open: false, item: null });
   const [leaveRuleModal, setLeaveRuleModal] = useState<{ open: boolean; item: LeavePolicyRule | null }>({ open: false, item: null });
+  const [leaveWizardOpen, setLeaveWizardOpen] = useState(false);
+  const [leaveWizardStep, setLeaveWizardStep] = useState<LeavePolicyWizardStep>("types");
+  const [leaveWizardTypes, setLeaveWizardTypes] = useState<LeavePolicyWizardType[]>([]);
   const [policySetForm, setPolicySetForm] = useState<PolicySetForm>(emptyPolicySetForm);
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(emptyAssignmentForm);
   const [leaveRuleForm, setLeaveRuleForm] = useState<LeaveRuleForm>(emptyLeaveRuleForm);
@@ -631,6 +704,76 @@ function PolicySetupWorkspace({ isSuperAdmin, onBack, tenant }: { isSuperAdmin: 
     setLeaveRuleModal({ open: true, item });
     setError("");
     setMessage("");
+  };
+
+  const openLeavePolicyWizard = () => {
+    setLeaveWizardTypes(leaveTypes.map(defaultWizardLeaveRule));
+    setLeaveWizardStep("types");
+    setLeaveWizardOpen(true);
+    setError("");
+    setMessage("");
+  };
+
+  const updateLeaveWizardType = (leaveTypeID: string, patch: Partial<LeavePolicyWizardType>) => {
+    setLeaveWizardTypes((current) => current.map((item) => item.leave_type_id === leaveTypeID ? { ...item, ...patch } : item));
+  };
+
+  const saveLeavePolicyWizard = async () => {
+    const enabledRules = leaveWizardTypes.filter((item) => item.enabled);
+    if (enabledRules.length === 0) {
+      setError("Select at least one leave type for the policy.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const existingSet = leavePolicySets.find((item) => item.code === "self_service_leave_policy");
+      const policyPayload = {
+        policy_kind: "leave",
+        code: "self_service_leave_policy",
+        name: "Self-Service Leave Policy",
+        description: "Company default leave policy configured from the guided wizard.",
+        config: { source: "guided_wizard" },
+        is_default: true,
+        is_active: true,
+      };
+      const policySet = existingSet
+        ? await apiRequest<PolicySet>(`${basePath}/policy-engine/policy-sets/${existingSet.id}`, { method: "PUT", body: policyPayload })
+        : await apiRequest<PolicySet>(`${basePath}/policy-engine/policy-sets`, { method: "POST", body: policyPayload });
+      const tenantAssignment = assignments.find((item) => item.policy_kind === "leave" && item.policy_set_id === policySet.id && item.scope_type === "tenant");
+      if (!tenantAssignment) {
+        await apiRequest<PolicyAssignment>(`${basePath}/policy-engine/assignments`, {
+          method: "POST",
+          body: {
+            policy_kind: "leave",
+            policy_set_id: policySet.id,
+            scope_type: "tenant",
+            priority: 100,
+            is_active: true,
+          },
+        });
+      }
+      const existingRules = await apiRequest<LeavePolicyRule[]>(`${basePath}/policy-engine/policy-sets/${policySet.id}/leave-rules`);
+      for (const wizardRule of enabledRules) {
+        const existingRule = existingRules.find((item) => item.leave_type_id === wizardRule.leave_type_id);
+        const payload = leaveRulePayload(wizardTypeToLeaveRuleForm(policySet.id, wizardRule));
+        if (existingRule) {
+          await apiRequest<LeavePolicyRule>(`${basePath}/policy-engine/leave-rules/${existingRule.id}`, { method: "PUT", body: payload });
+        } else {
+          await apiRequest<LeavePolicyRule>(`${basePath}/policy-engine/policy-sets/${policySet.id}/leave-rules`, { method: "POST", body: payload });
+        }
+      }
+      setLeaveWizardOpen(false);
+      setSelectedLeavePolicyID(policySet.id);
+      setMessage("Guided leave policy saved and assigned as the company default.");
+      await loadPolicyData();
+      await reloadLeaveRules(policySet.id);
+      setActiveTab("leave-rules");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save guided leave policy.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const savePolicySet = async (event: FormEvent) => {
@@ -779,6 +922,7 @@ function PolicySetupWorkspace({ isSuperAdmin, onBack, tenant }: { isSuperAdmin: 
         </div>
         <div className="flex flex-wrap gap-2">
           {onBack ? <button className="rounded-xl border border-[#dbe0e5] bg-white px-4 py-3 text-sm font-black text-[#172033] hover:bg-[#f8faf9]" onClick={onBack} type="button">Change Tenant</button> : null}
+          <button className="inline-flex items-center gap-2 rounded-xl bg-[#e87839] px-4 py-3 text-sm font-black text-white shadow-sm hover:bg-[#d96425]" onClick={openLeavePolicyWizard} type="button"><Wand2 className="h-4 w-4" />Guided Leave Setup</button>
           <button className="inline-flex items-center gap-2 rounded-xl border border-[#dbe0e5] bg-white px-4 py-3 text-sm font-black text-[#172033] hover:bg-[#f8faf9]" onClick={() => void loadPolicyData()} type="button"><RefreshCw className="h-4 w-4" />Refresh</button>
         </div>
       </div>
@@ -823,6 +967,89 @@ function PolicySetupWorkspace({ isSuperAdmin, onBack, tenant }: { isSuperAdmin: 
 
       <HrmsModal description="Define the policy definition. Assignments decide who receives it." onClose={() => setPolicySetModal({ open: false, item: null })} open={policySetModal.open} title={policySetModal.item ? "Edit Policy Set" : "New Policy Set"}>
         <PolicySetFormView form={policySetForm} onChange={setPolicySetForm} onSubmit={savePolicySet} saving={saving} />
+      </HrmsModal>
+
+      <HrmsModal description="Build a company-default leave policy without writing JSON or touching every advanced field." onClose={() => setLeaveWizardOpen(false)} open={leaveWizardOpen} title="Guided Leave Policy Setup">
+        <div className="grid gap-5">
+          <div className="grid gap-2 sm:grid-cols-3">
+            {leaveWizardSteps.map((step, index) => (
+              <button className={`rounded-xl border px-3 py-2 text-left text-xs font-black ${leaveWizardStep === step.key ? "border-[#588368] bg-[#eef4f1] text-[#426b55]" : "border-[#edf1ef] bg-[#f8faf9] text-[#7a827d]"}`} key={step.key} onClick={() => setLeaveWizardStep(step.key)} type="button">
+                <span className="block text-[10px] uppercase tracking-[0.18em]">Step {index + 1}</span>
+                {step.label}
+              </button>
+            ))}
+          </div>
+
+          {leaveWizardStep === "types" ? (
+            <div className="grid gap-3">
+              {leaveWizardTypes.map((item) => {
+                const leaveType = leaveTypes.find((option) => option.id === item.leave_type_id);
+                return (
+                  <label className={`flex items-start gap-3 rounded-2xl border p-4 ${item.enabled ? "border-[#588368] bg-[#eef4f1]" : "border-[#edf1ef] bg-white"}`} key={item.leave_type_id}>
+                    <input checked={item.enabled} className="mt-1 h-4 w-4 accent-[#588368]" onChange={(event) => updateLeaveWizardType(item.leave_type_id, { enabled: event.target.checked })} type="checkbox" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-black text-[#172033]">{leaveType ? optionName(leaveTypes, leaveType.id) : item.leave_type_id.slice(0, 8)}</span>
+                      <span className="mt-1 block text-xs font-semibold text-[#6b7280]">{item.payroll_impact === "unpaid" ? "Unpaid / LOP" : `${item.entitlement_days || 0} days entitlement`}</span>
+                    </span>
+                  </label>
+                );
+              })}
+              {leaveWizardTypes.length === 0 ? <p className="rounded-xl bg-[#f8faf9] px-4 py-6 text-center text-sm font-semibold text-[#6b7280]">No leave types are available. Create leave types before running the guided setup.</p> : null}
+            </div>
+          ) : null}
+
+          {leaveWizardStep === "rules" ? (
+            <div className="grid gap-4">
+              {leaveWizardTypes.filter((item) => item.enabled).map((item) => (
+                <div className="rounded-2xl border border-[#edf1ef] bg-white p-4" key={item.leave_type_id}>
+                  <h3 className="text-sm font-black text-[#172033]">{optionName(leaveTypes, item.leave_type_id)}</h3>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <InputField label="Entitlement days" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { entitlement_days: value })} type="number" value={item.entitlement_days} />
+                    <SelectField label="Grant mode" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { grant_mode: value })} value={item.grant_mode}>{grantModeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</SelectField>
+                    <InputField label="Notice required after days" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { notice_required_after_days: value })} type="number" value={item.notice_required_after_days} />
+                    <InputField label="Notice days" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { notice_days: value })} type="number" value={item.notice_days} />
+                    <InputField label="Attachment after days" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { attachment_required_after_days: value })} type="number" value={item.attachment_required_after_days} />
+                    <SelectField label="Payroll impact" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { payroll_impact: value })} value={item.payroll_impact}>{payrollImpactOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</SelectField>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <CheckField checked={item.allow_half_day} label="Allow half day" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { allow_half_day: value })} />
+                    <CheckField checked={item.sandwich_enabled} label="Sandwich rule" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { sandwich_enabled: value })} />
+                    <CheckField checked={item.negative_balance_allowed} label="Negative balance" onChange={(value) => updateLeaveWizardType(item.leave_type_id, { negative_balance_allowed: value })} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {leaveWizardStep === "review" ? (
+            <div className="grid gap-3">
+              <div className="rounded-2xl border border-[#dbe8e1] bg-[#f8faf9] p-4">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-[#588368]">Company Default</p>
+                <h3 className="mt-2 text-xl font-black text-[#172033]">Self-Service Leave Policy</h3>
+                <p className="mt-1 text-sm font-semibold text-[#6b7280]">{leaveWizardTypes.filter((item) => item.enabled).length} leave type rules will be saved and assigned to the whole tenant.</p>
+              </div>
+              <div className="grid gap-2">
+                {leaveWizardTypes.filter((item) => item.enabled).map((item) => (
+                  <div className="grid gap-2 rounded-xl border border-[#edf1ef] bg-white p-3 text-sm font-semibold text-[#425049] sm:grid-cols-4" key={item.leave_type_id}>
+                    <span className="font-black text-[#172033]">{optionName(leaveTypes, item.leave_type_id)}</span>
+                    <span>{item.entitlement_days || 0} days</span>
+                    <span>{item.sandwich_enabled ? "Sandwich enabled" : "No sandwich"}</span>
+                    <span>{compactLabel(item.payroll_impact)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex justify-between border-t border-[#edf1ef] pt-4">
+            <button className="rounded-xl border border-[#dbe0e5] bg-white px-4 py-3 text-sm font-black text-[#172033] disabled:opacity-50" disabled={leaveWizardStep === "types"} onClick={() => setLeaveWizardStep(leaveWizardSteps[Math.max(0, leaveWizardSteps.findIndex((item) => item.key === leaveWizardStep) - 1)].key)} type="button">Back</button>
+            {leaveWizardStep !== "review" ? (
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white" onClick={() => setLeaveWizardStep(leaveWizardSteps[Math.min(leaveWizardSteps.length - 1, leaveWizardSteps.findIndex((item) => item.key === leaveWizardStep) + 1)].key)} type="button">Next</button>
+            ) : (
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:opacity-60" disabled={saving} onClick={() => void saveLeavePolicyWizard()} type="button">{saving ? "Saving..." : "Save Guided Policy"}</button>
+            )}
+          </div>
+        </div>
       </HrmsModal>
 
       <HrmsModal description="Attach a policy to company, branch, department, designation, workforce type, role, or one employee." onClose={() => setAssignmentModal({ open: false, item: null })} open={assignmentModal.open} title={assignmentModal.item ? "Edit Assignment" : "New Assignment"}>

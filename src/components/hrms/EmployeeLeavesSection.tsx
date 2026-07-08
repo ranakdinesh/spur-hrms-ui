@@ -1,8 +1,10 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarCheck, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 
 import type { BranchTenantOption } from "@/components/hrms/BranchesSection";
+import { HrmsModal } from "@/components/hrms/HrmsModal";
 import { apiRequest } from "@/lib/api";
 
 type Employee = { user_id: string; firstname: string; lastname?: string | null; employee_code?: string | null; probation_status?: string; probation_end_date?: string | null; is_payroll_staff?: boolean };
@@ -14,6 +16,14 @@ type EmployeeDashboard = { leave?: { balances: Array<LeaveBalance & { leave_type
 type LeavePreview = { allowed: boolean; total_days: number; base_days: number; sandwich_days: number; is_sandwich: boolean; balance_before: number; balance_after: number; pending_after: number; paid_leave: boolean; blocking_reasons?: string[]; warnings?: string[]; requires_attachment: boolean; notice_required: boolean; notice_days: number; payroll_impact?: string; effective_policy?: { name: string; code: string } | null };
 type DayType = "fullday" | "firsthalf" | "secondhalf";
 type DurationMode = "full" | "firsthalf" | "secondhalf" | "custom";
+type ApplyStep = "type" | "dates" | "preview" | "review";
+
+const applySteps: Array<{ key: ApplyStep; label: string }> = [
+  { key: "type", label: "Leave Type" },
+  { key: "dates", label: "Dates" },
+  { key: "preview", label: "Policy Preview" },
+  { key: "review", label: "Review" },
+];
 
 const dayTypeLabels: Record<DayType, string> = {
   firsthalf: "First half",
@@ -126,6 +136,8 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
   const [leaves, setLeaves] = useState<Leave[]>([]);
   const [selectedUser, setSelectedUser] = useState("");
   const [selectedFY, setSelectedFY] = useState("");
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [applyStep, setApplyStep] = useState<ApplyStep>("type");
   const [durationMode, setDurationMode] = useState<DurationMode>("full");
   const [form, setForm] = useState({ leave_type_id: "", start_date: "", end_date: "", start_day_type: "fullday" as DayType, end_day_type: "fullday" as DayType, reason: "" });
   const [preview, setPreview] = useState<{ key: string; result: LeavePreview } | null>(null);
@@ -150,6 +162,14 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
   }, [balances, enabledLeaveTypes, isSuperAdmin, typeByID]);
 
   const leaveTypeName = useCallback((leaveTypeID: string) => balanceByTypeID.get(leaveTypeID)?.leave_type_name || typeByID.get(leaveTypeID)?.name || leaveTypeID.slice(0, 8), [balanceByTypeID, typeByID]);
+
+  const applyStepIndex = applySteps.findIndex((item) => item.key === applyStep);
+  const canMoveFromStep = useMemo(() => {
+    if (applyStep === "type") return Boolean(form.leave_type_id && (!isSuperAdmin || (selectedUser && selectedFY)));
+    if (applyStep === "dates") return Boolean(form.start_date && form.end_date);
+    if (applyStep === "preview") return Boolean(currentPreview);
+    return Boolean(currentPreview?.allowed);
+  }, [applyStep, currentPreview, form.end_date, form.leave_type_id, form.start_date, isSuperAdmin, selectedFY, selectedUser]);
 
   const loadSelfServiceData = useCallback(async () => {
     const [dashboardData, leaveData, leaveTypeData] = await Promise.all([
@@ -250,6 +270,22 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     });
   }
 
+  function openApplyWizard() {
+    setApplyOpen(true);
+    setApplyStep("type");
+    setMessage("");
+    setError("");
+  }
+
+  function closeApplyWizard() {
+    setApplyOpen(false);
+  }
+
+  function moveApplyStep(direction: "back" | "next") {
+    const nextIndex = direction === "back" ? Math.max(0, applyStepIndex - 1) : Math.min(applySteps.length - 1, applyStepIndex + 1);
+    setApplyStep(applySteps[nextIndex]?.key || "type");
+  }
+
   async function submitLeave(event: FormEvent) {
     event.preventDefault();
     setMessage("");
@@ -270,6 +306,9 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
       });
       setMessage("Leave request submitted.");
       setForm((current) => ({ ...current, reason: "" }));
+      setApplyOpen(false);
+      setApplyStep("type");
+      setPreview(null);
       if (isSuperAdmin) {
         await loadEmployeeLeaveData();
       } else {
@@ -382,85 +421,27 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             {balances.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#6b7280]">No leave balance is available yet.</p> : null}
           </div>
 
-          <form className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm" onSubmit={submitLeave}>
-            <h2 className="text-xl font-black text-[#111827]">New Request</h2>
-            {probationBlocked ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">Earned Leave is blocked until probation is completed.</p> : null}
-            <div className="mt-5 grid gap-4">
-              {isSuperAdmin ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={loading} onChange={(e) => setSelectedUser(e.target.value)} value={selectedUser}>
-                    <option value="">Select employee</option>
-                    {employees.map((item) => <option key={item.user_id} value={item.user_id}>{employeeLabel(item)}</option>)}
-                  </select>
-                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setSelectedFY(e.target.value)} value={selectedFY}>
-                    <option value="">Financial year</option>
-                    {financialYears.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
-                </div>
-              ) : null}
-
-              <label className="grid gap-2 text-sm font-black text-[#374151]">
-                Leave type
-                <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, leave_type_id: e.target.value }))} required value={form.leave_type_id}>
-                  <option value="">Select leave type</option>
-                  {leaveOptions.map((item) => <option disabled={probationBlocked && isEarnedLeave(item)} key={item.id} value={item.id}>{item.name}{probationBlocked && isEarnedLeave(item) ? " (blocked)" : ""}</option>)}
-                </select>
-              </label>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-2 text-sm font-black text-[#374151]">
-                  From
-                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setStartDate(e.target.value)} required type="date" value={form.start_date} />
-                </label>
-                <label className="grid gap-2 text-sm font-black text-[#374151]">
-                  To
-                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={durationMode === "firsthalf" || durationMode === "secondhalf"} min={form.start_date || undefined} onChange={(e) => setForm((current) => ({ ...current, end_date: e.target.value }))} required type="date" value={form.end_date} />
-                </label>
-              </div>
-
-              <div className="grid gap-2">
-                <p className="text-sm font-black text-[#374151]">Duration</p>
-                <div className="grid gap-2 sm:grid-cols-4">
-                  {[
-                    ["full", "Full day"],
-                    ["firsthalf", "First half"],
-                    ["secondhalf", "Second half"],
-                    ["custom", "Custom"],
-                  ].map(([mode, label]) => <button className={`h-11 rounded-xl border px-3 text-sm font-black ${durationMode === mode ? "border-[#588368] bg-[#588368] text-white" : "border-[#dbe8e1] bg-white text-[#374151]"}`} key={mode} onClick={() => setDuration(mode as DurationMode)} type="button">{label}</button>)}
+          <section className="overflow-hidden rounded-2xl border border-[#dfe6e2] bg-[linear-gradient(135deg,#f6fbf7,#fff7ef)] p-5 shadow-[0_18px_50px_rgba(31,41,55,0.08)]">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-4">
+                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#588368] text-white shadow-[0_14px_28px_rgba(88,131,104,0.22)]"><Sparkles className="h-6 w-6" /></span>
+                <div>
+                  <h2 className="text-xl font-black text-[#111827]">Apply Leave</h2>
+                  <p className="mt-1 text-sm font-semibold text-[#66736b]">Choose a leave type, select dates, preview sandwich and balance impact, then submit.</p>
                 </div>
               </div>
-
-              {durationMode === "custom" ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="grid gap-2 text-sm font-black text-[#374151]">
-                    Start day
-                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, start_day_type: e.target.value as DayType }))} value={form.start_day_type}>
-                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
-                    </select>
-                  </label>
-                  <label className="grid gap-2 text-sm font-black text-[#374151]">
-                    End day
-                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, end_day_type: e.target.value as DayType }))} value={form.end_day_type}>
-                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
-                    </select>
-                  </label>
-                </div>
-              ) : null}
-
-              <textarea className="min-h-24 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, reason: e.target.value }))} placeholder="Reason" value={form.reason} />
-
-              <div className="rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-bold text-[#374151]">
-                {estimatedDays ? <span>Estimated {formatDays(estimatedDays)} day{estimatedDays === 1 ? "" : "s"} from {selectedBalance ? formatDays(selectedBalance.balance_days) : "0"} available.</span> : <span>Select dates to see the estimated duration.</span>}
-              </div>
-
-              <LeavePreviewPanel preview={currentPreview} />
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <button className="rounded-xl border border-[#588368] bg-white px-5 py-3 text-sm font-black text-[#588368] disabled:cursor-not-allowed disabled:opacity-60" disabled={!formReady || previewLoading} onClick={() => void previewLeave()} type="button">{previewLoading ? "Previewing..." : "Preview Leave"}</button>
-                <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
-              </div>
+              <button className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#e87839] px-5 py-3 text-sm font-black text-white shadow-[0_14px_30px_rgba(232,120,57,0.22)] hover:bg-[#d96425]" onClick={openApplyWizard} type="button">
+                <CalendarCheck className="h-4 w-4" />
+                Apply Leave
+              </button>
             </div>
-          </form>
+            {probationBlocked ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">Earned Leave is blocked until probation is completed.</p> : null}
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <QuickStat label="Selected type" value={form.leave_type_id ? leaveTypeName(form.leave_type_id) : "Not selected"} />
+              <QuickStat label="Estimated days" value={estimatedDays ? formatDays(estimatedDays) : "-"} />
+              <QuickStat label="Available balance" value={selectedBalance ? formatDays(selectedBalance.balance_days) : "-"} />
+            </div>
+          </section>
         </div>
 
         <div className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
@@ -488,6 +469,140 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
           {leaves.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#6b7280]">No leave requests found.</p> : null}
         </div>
       </div>
+
+      <HrmsModal description="Preview policy impact before submitting so sandwich days, balance, and payroll impact are clear." onClose={closeApplyWizard} open={applyOpen} title="Apply Leave">
+        <form className="grid gap-5" onSubmit={submitLeave}>
+          <div className="grid gap-2 sm:grid-cols-4">
+            {applySteps.map((step, index) => (
+              <button className={`rounded-xl border px-3 py-2 text-left text-xs font-black ${applyStep === step.key ? "border-[#588368] bg-[#eef4f1] text-[#426b55]" : index < applyStepIndex ? "border-[#d7e3dc] bg-white text-[#426b55]" : "border-[#edf1ef] bg-[#f8faf9] text-[#7a827d]"}`} key={step.key} onClick={() => setApplyStep(step.key)} type="button">
+                <span className="block text-[10px] uppercase tracking-[0.18em]">Step {index + 1}</span>
+                {step.label}
+              </button>
+            ))}
+          </div>
+
+          {applyStep === "type" ? (
+            <div className="grid gap-4">
+              {isSuperAdmin ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={loading} onChange={(e) => setSelectedUser(e.target.value)} value={selectedUser}>
+                    <option value="">Select employee</option>
+                    {employees.map((item) => <option key={item.user_id} value={item.user_id}>{employeeLabel(item)}</option>)}
+                  </select>
+                  <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setSelectedFY(e.target.value)} value={selectedFY}>
+                    <option value="">Financial year</option>
+                    {financialYears.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {leaveOptions.map((item) => {
+                  const balance = balanceByTypeID.get(item.id);
+                  const selected = form.leave_type_id === item.id;
+                  const blocked = probationBlocked && isEarnedLeave(item);
+                  return (
+                    <button className={`rounded-2xl border p-4 text-left transition ${selected ? "border-[#588368] bg-[#eef4f1] shadow-sm" : "border-[#edf1ef] bg-white hover:border-[#b7c8bd]"} ${blocked ? "cursor-not-allowed opacity-60" : ""}`} disabled={blocked} key={item.id} onClick={() => setForm((current) => ({ ...current, leave_type_id: item.id }))} type="button">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-sm font-black text-[#111827]">{item.name}</p>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-[#588368]">{balance ? formatDays(balance.balance_days) : "-"}</span>
+                      </div>
+                      <p className="mt-2 text-xs font-bold text-[#6b7280]">{blocked ? "Blocked during probation" : `Used ${formatDays(balance?.used_days || 0)} / Total ${formatDays(balance?.total_days || 0)}`}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {applyStep === "dates" ? (
+            <div className="grid gap-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="grid gap-2 text-sm font-black text-[#374151]">
+                  From
+                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setStartDate(e.target.value)} required type="date" value={form.start_date} />
+                </label>
+                <label className="grid gap-2 text-sm font-black text-[#374151]">
+                  To
+                  <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={durationMode === "firsthalf" || durationMode === "secondhalf"} min={form.start_date || undefined} onChange={(e) => setForm((current) => ({ ...current, end_date: e.target.value }))} required type="date" value={form.end_date} />
+                </label>
+              </div>
+              <div className="grid gap-2">
+                <p className="text-sm font-black text-[#374151]">Duration</p>
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {[
+                    ["full", "Full day"],
+                    ["firsthalf", "First half"],
+                    ["secondhalf", "Second half"],
+                    ["custom", "Custom"],
+                  ].map(([mode, label]) => <button className={`h-11 rounded-xl border px-3 text-sm font-black ${durationMode === mode ? "border-[#588368] bg-[#588368] text-white" : "border-[#dbe8e1] bg-white text-[#374151]"}`} key={mode} onClick={() => setDuration(mode as DurationMode)} type="button">{label}</button>)}
+                </div>
+              </div>
+              {durationMode === "custom" ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-black text-[#374151]">
+                    Start day
+                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, start_day_type: e.target.value as DayType }))} value={form.start_day_type}>
+                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
+                    </select>
+                  </label>
+                  <label className="grid gap-2 text-sm font-black text-[#374151]">
+                    End day
+                    <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, end_day_type: e.target.value as DayType }))} value={form.end_day_type}>
+                      {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+              <textarea className="min-h-24 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, reason: e.target.value }))} placeholder="Reason" value={form.reason} />
+              <div className="rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-bold text-[#374151]">
+                {estimatedDays ? <span>Estimated {formatDays(estimatedDays)} day{estimatedDays === 1 ? "" : "s"} from {selectedBalance ? formatDays(selectedBalance.balance_days) : "0"} available.</span> : <span>Select dates to see the estimated duration.</span>}
+              </div>
+            </div>
+          ) : null}
+
+          {applyStep === "preview" ? (
+            <div className="grid gap-4">
+              <button className="rounded-xl border border-[#588368] bg-white px-5 py-3 text-sm font-black text-[#588368] disabled:cursor-not-allowed disabled:opacity-60" disabled={!formReady || previewLoading} onClick={() => void previewLeave()} type="button">{previewLoading ? "Previewing..." : "Run Policy Preview"}</button>
+              <LeavePreviewPanel preview={currentPreview} />
+              {!currentPreview ? <p className="rounded-xl bg-[#f8faf9] px-4 py-6 text-center text-sm font-semibold text-[#6b7280]">Run preview to calculate total deducted days, sandwich impact, and available balance before submission.</p> : null}
+            </div>
+          ) : null}
+
+          {applyStep === "review" ? (
+            <div className="grid gap-4">
+              <div className="rounded-2xl border border-[#edf1ef] bg-[#f8faf9] p-4">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-[#588368]">Request Summary</p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <QuickStat label="Leave type" value={form.leave_type_id ? leaveTypeName(form.leave_type_id) : "-"} />
+                  <QuickStat label="Period" value={form.start_date && form.end_date ? `${formatDate(form.start_date)} - ${formatDate(form.end_date)}` : "-"} />
+                  <QuickStat label="Total deducted" value={currentPreview ? `${formatDays(currentPreview.total_days)} days` : "-"} />
+                  <QuickStat label="Balance after" value={currentPreview ? formatDays(currentPreview.balance_after) : "-"} />
+                </div>
+              </div>
+              <LeavePreviewPanel preview={currentPreview} />
+            </div>
+          ) : null}
+
+          <div className="flex flex-col-reverse gap-3 border-t border-[#edf1ef] pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <button className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#dbe8e1] bg-white px-4 py-3 text-sm font-black text-[#374151] disabled:opacity-50" disabled={applyStepIndex === 0} onClick={() => moveApplyStep("back")} type="button"><ChevronLeft className="h-4 w-4" />Back</button>
+            {applyStep !== "review" ? (
+              <button className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:bg-[#9ca3af]" disabled={!canMoveFromStep} onClick={() => moveApplyStep("next")} type="button">Next<ChevronRight className="h-4 w-4" /></button>
+            ) : (
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
+            )}
+          </div>
+        </form>
+      </HrmsModal>
     </section>
+  );
+}
+
+function QuickStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-[#edf1ef] bg-white/85 px-4 py-3">
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7a827d]">{label}</p>
+      <p className="mt-1 truncate text-sm font-black text-[#172033]">{value}</p>
+    </div>
   );
 }
