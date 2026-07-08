@@ -22,6 +22,22 @@ type Attendance = {
   remarks?: string | null;
   created_at: string;
 };
+type AttendanceSegment = {
+  id: string;
+  date: string;
+  event_time: string;
+  segment_type: string;
+  action: string;
+  work_mode?: string | null;
+  source?: string | null;
+  reference_type?: string | null;
+  reference_label?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  location_verification_status?: string | null;
+  remarks?: string | null;
+  created_at: string;
+};
 
 type AttendanceStatusRow = {
   user_id: string;
@@ -113,6 +129,36 @@ const workModes = [
   { value: "remote", label: "Remote" },
   { value: "field", label: "Field" },
   { value: "hybrid", label: "Hybrid" },
+];
+const segmentWorkModes = [...workModes, { value: "client_site", label: "Client Site" }, { value: "project_site", label: "Project Site" }];
+const segmentTypes = [
+  { value: "office", label: "Office" },
+  { value: "site", label: "Site" },
+  { value: "client_site", label: "Client Site" },
+  { value: "project_site", label: "Project Site" },
+  { value: "travel", label: "Travel" },
+  { value: "break", label: "Break" },
+  { value: "remote", label: "Remote" },
+  { value: "other", label: "Other" },
+];
+const segmentActions = [
+  { value: "arrive", label: "Arrive" },
+  { value: "depart", label: "Depart" },
+  { value: "start", label: "Start" },
+  { value: "end", label: "End" },
+  { value: "checkin", label: "Check In" },
+  { value: "checkout", label: "Check Out" },
+  { value: "note", label: "Note" },
+];
+const referenceTypes = [
+  { value: "", label: "No reference" },
+  { value: "client", label: "Client" },
+  { value: "project", label: "Project" },
+  { value: "site", label: "Site" },
+  { value: "route", label: "Route" },
+  { value: "ticket", label: "Ticket" },
+  { value: "task", label: "Task" },
+  { value: "other", label: "Other" },
 ];
 const sources = [
   { value: "web", label: "Web" },
@@ -242,9 +288,11 @@ function MyAttendanceSelfService() {
   const [locationMessage, setLocationMessage] = useState("");
   const [locationLoading, setLocationLoading] = useState(false);
   const [items, setItems] = useState<Attendance[]>([]);
+  const [segments, setSegments] = useState<AttendanceSegment[]>([]);
   const [statusRows, setStatusRows] = useState<AttendanceStatusRow[]>([]);
   const [requests, setRequests] = useState<AttendanceRequest[]>([]);
   const [requestForm, setRequestForm] = useState({ request_type: "missed_punch", requested_type: "missed_punch", requested_checkin_at: "", requested_checkout_at: "", requested_work_mode: "office", reason: "" });
+  const [segmentForm, setSegmentForm] = useState({ segment_type: "client_site", action: "arrive", work_mode: "field", reference_type: "client", reference_label: "", remarks: "" });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -262,12 +310,14 @@ function MyAttendanceSelfService() {
     setError("");
     try {
       const query = new URLSearchParams({ date });
-      const [attendanceData, statusData, requestData] = await Promise.all([
+      const [attendanceData, segmentData, statusData, requestData] = await Promise.all([
         apiRequest<Attendance[]>(`/hrms/attendances?${query.toString()}`),
+        apiRequest<AttendanceSegment[]>(`/hrms/attendances/segments?${query.toString()}`),
         apiRequest<AttendanceStatusRow[]>(`/hrms/attendances/status?${query.toString()}`),
         apiRequest<AttendanceRequest[]>("/hrms/attendance-requests"),
       ]);
       setItems(attendanceData);
+      setSegments(segmentData);
       setStatusRows(statusData);
       setRequests(requestData);
     } catch (err) {
@@ -354,6 +404,41 @@ function MyAttendanceSelfService() {
     }
   }
 
+  async function createSegment() {
+    setMessage("");
+    setError("");
+    if (!attendanceRequired) {
+      setError("Attendance is not required today.");
+      return;
+    }
+    try {
+      const segmentLocation = location || await captureLocation();
+      await apiRequest("/hrms/attendances/segments", {
+        method: "POST",
+        body: {
+          date,
+          event_time: new Date().toISOString(),
+          segment_type: segmentForm.segment_type,
+          action: segmentForm.action,
+          work_mode: segmentForm.work_mode,
+          source,
+          reference_type: segmentForm.reference_type || undefined,
+          reference_label: segmentForm.reference_label || undefined,
+          latitude: segmentLocation.latitude,
+          longitude: segmentLocation.longitude,
+          remarks: segmentForm.remarks || undefined,
+        },
+      });
+      setMessage("Field timeline event captured.");
+      setSegmentForm((current) => ({ ...current, reference_label: "", remarks: "" }));
+      setLocation(null);
+      setLocationMessage("");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to capture field timeline event.");
+    }
+  }
+
   function prepareMissingCheckoutRequest() {
     const now = new Date();
     setRequestForm((current) => ({
@@ -418,6 +503,45 @@ function MyAttendanceSelfService() {
               <button className="rounded-xl border border-[#dbe8e1] bg-[#f8faf9] px-5 py-3 text-sm font-black text-[#588368] disabled:opacity-60" disabled={locationLoading} onClick={() => void captureLocation().catch(() => undefined)} type="button">{locationLoading ? "Locating..." : location ? "Refresh current location" : "Use current location"}</button>
               <p className="text-xs font-semibold text-[#6b7280]">{location ? `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}` : locationMessage || "Location is saved only with the punch record."}</p>
             </div>
+          </section>
+
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-xl font-black text-[#172033]">Field Timeline</h2>
+                <p className="mt-1 text-sm font-semibold text-[#6b7280]">Capture site, client, travel, and route events for this workday.</p>
+              </div>
+              <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{segments.length} events</span>
+            </div>
+            <div className="mt-4 grid gap-3 rounded-2xl bg-[#f8faf9] p-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <select className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, segment_type: event.target.value }))} value={segmentForm.segment_type}>{segmentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+                <select className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, action: event.target.value }))} value={segmentForm.action}>{segmentActions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+                <select className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, work_mode: event.target.value }))} value={segmentForm.work_mode}>{segmentWorkModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+              </div>
+              <div className="grid gap-3 md:grid-cols-[0.7fr_1fr]">
+                <select className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, reference_type: event.target.value }))} value={segmentForm.reference_type}>{referenceTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+                <input className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, reference_label: event.target.value }))} placeholder="Client, project, site, or route name" value={segmentForm.reference_label} />
+              </div>
+              <textarea className="min-h-20 rounded-xl border border-[#dbe8e1] bg-white px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(event) => setSegmentForm((current) => ({ ...current, remarks: event.target.value }))} placeholder="Notes for this event" value={segmentForm.remarks} />
+              <button className="rounded-xl bg-[#e87839] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#d1d5db]" disabled={loading || locationLoading || !attendanceRequired} onClick={() => void createSegment()} type="button">{locationLoading ? "Locating..." : "Capture Event"}</button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {segments.map((item) => (
+                <article className="rounded-xl border border-[#edf1ef] p-4" key={item.id}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-black text-[#172033]">{titleCase(item.segment_type)} · {titleCase(item.action)}</p>
+                      <p className="mt-1 text-xs font-semibold text-[#6b7280]">{fmtTime(item.event_time || item.created_at)} · {titleCase(item.work_mode)}{item.reference_label ? ` · ${item.reference_label}` : ""}</p>
+                    </div>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-[#588368]">{titleCase(item.source)}</span>
+                  </div>
+                  {item.remarks ? <p className="mt-3 text-sm font-semibold text-[#6b7280]">{item.remarks}</p> : null}
+                  {item.latitude != null && item.longitude != null ? <p className="mt-2 text-xs font-semibold text-[#6b7280]">{item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}</p> : null}
+                </article>
+              ))}
+            </div>
+            {segments.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-4 text-sm font-semibold text-[#6b7280]">No field timeline events found for this date.</p> : null}
           </section>
 
           <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
