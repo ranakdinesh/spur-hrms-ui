@@ -48,6 +48,7 @@ import { asset } from "@/lib/site-data";
 import { AgreementsSection } from "@/components/hrms/AgreementsSection";
 import { ApplicantPortalSection } from "@/components/hrms/ApplicantPortalSection";
 import { AssetAccessLifecycleSection } from "@/components/hrms/AssetAccessLifecycleSection";
+import { AttendanceLeavePolicySetupSection } from "@/components/hrms/AttendanceLeavePolicySetupSection";
 import { AttendanceSection } from "@/components/hrms/AttendanceSection";
 import { BenefitsClaimsSection } from "@/components/hrms/BenefitsClaimsSection";
 import { BranchesSection, type BranchTenantOption } from "@/components/hrms/BranchesSection";
@@ -350,7 +351,7 @@ type TenantProfile = {
   logo_object_key?: string | null;
 };
 
-type ActiveSection = "superadmin-dashboard" | "tenants" | "signup-requests" | "tenant-operations" | "users" | "roles" | "employee-dashboard" | "applicant-portal" | "inbox" | "completed" | "hr-command-center" | "hr-dashboard" | "operations-workbench" | "workflow-inbox" | "hr-helpdesk" | "employee-relations" | "notification-inbox" | "job-positions" | "career-site" | "job-requisitions" | "job-postings" | "candidates" | "candidate-applications" | "interview-rounds" | "offer-letters" | "onboarding-workflows" | "candidate-onboarding" | "celebrations" | "celebration-jobs" | "employees" | "workforce-hub" | "engagements" | "projects" | "work-logs" | "compliance" | "skills" | "skill-gaps" | "learning" | "talent-marketplace" | "succession-planning" | "asset-access" | "okrs" | "performance" | "wellbeing" | "people-analytics" | "privacy-ecosystem" | "employee-letters" | "agreements" | "document-sign" | "employee-exits" | "my-onboarding" | "portal-branding" | "branches" | "departments" | "designations" | "workforce-types" | "document-requirements" | "lookups" | "celebration-types" | "notification-settings" | "notification-center" | "communication-providers" | "storage-providers" | "push-providers" | "financial-years" | "working-hours" | "holidays" | "leave-types" | "leave-policies" | "payroll-settings" | "payroll-operations" | "flexible-payroll" | "compensation-review" | "salary-templates" | "employee-salary" | "payslips" | "benefits-claims" | "leaves" | "leave-approvals" | "leave-reports" | "reports" | "insights" | "attendance" | "shift-scheduling" | "policies" | "subscription-plans" | "subscriptions";
+type ActiveSection = "superadmin-dashboard" | "tenants" | "signup-requests" | "tenant-operations" | "users" | "roles" | "employee-dashboard" | "applicant-portal" | "inbox" | "completed" | "hr-command-center" | "hr-dashboard" | "operations-workbench" | "workflow-inbox" | "hr-helpdesk" | "employee-relations" | "notification-inbox" | "job-positions" | "career-site" | "job-requisitions" | "job-postings" | "candidates" | "candidate-applications" | "interview-rounds" | "offer-letters" | "onboarding-workflows" | "candidate-onboarding" | "celebrations" | "celebration-jobs" | "employees" | "workforce-hub" | "engagements" | "projects" | "work-logs" | "compliance" | "skills" | "skill-gaps" | "learning" | "talent-marketplace" | "succession-planning" | "asset-access" | "okrs" | "performance" | "wellbeing" | "people-analytics" | "privacy-ecosystem" | "employee-letters" | "agreements" | "document-sign" | "employee-exits" | "my-onboarding" | "portal-branding" | "branches" | "departments" | "designations" | "workforce-types" | "document-requirements" | "lookups" | "celebration-types" | "notification-settings" | "notification-center" | "communication-providers" | "storage-providers" | "push-providers" | "financial-years" | "working-hours" | "holidays" | "leave-types" | "leave-policies" | "attendance-leave-policies" | "payroll-settings" | "payroll-operations" | "flexible-payroll" | "compensation-review" | "salary-templates" | "employee-salary" | "payslips" | "benefits-claims" | "leaves" | "leave-approvals" | "leave-reports" | "reports" | "insights" | "attendance" | "shift-scheduling" | "policies" | "subscription-plans" | "subscriptions";
 
 // MVP navigation intentionally hides implemented advanced modules. This is product navigation only;
 // backend authorization and future module entitlements must remain enforced outside this menu config.
@@ -506,6 +507,7 @@ const tenantAdminHrNavItems: NavItem[] = [
       { label: "Financial Years", permission: "hrms.financial_years.list" },
       { label: "Working Hours", permission: "hrms.working_hours.list" },
       { label: "Holidays", permission: "hrms.holidays.list" },
+      { label: "Attendance & Leave Policies", permission: "hrms.attendance.policy.view" },
       { label: "Policies", permission: "hrms.policies.list" },
     ],
   },
@@ -637,6 +639,7 @@ const sectionByNavLabel: Record<string, ActiveSection> = {
   Holidays: "holidays",
   "Leave Types": "leave-types",
   "Leave Settings": "leave-policies",
+  "Attendance & Leave Policies": "attendance-leave-policies",
   "Leave Balances": "leave-policies",
   "Payroll Settings": "payroll-settings",
   "Payroll Operations": "payroll-operations",
@@ -687,9 +690,9 @@ const groupedSectionsByNavLabel: Partial<Record<string, ActiveSection[]>> = {
   Recruitment: ["career-site", "job-positions", "job-requisitions", "job-postings", "candidates", "candidate-applications", "interview-rounds", "offer-letters", "onboarding-workflows", "candidate-onboarding"],
   Hiring: ["career-site", "job-positions", "job-requisitions", "job-postings", "candidates", "candidate-applications", "interview-rounds", "offer-letters", "candidate-onboarding"],
   Onboarding: ["onboarding-workflows", "candidate-onboarding"],
-  "Time & Leave": ["attendance", "shift-scheduling", "benefits-claims", "leaves", "leave-approvals", "leave-policies", "leave-reports", "reports", "insights"],
-  Time: ["attendance", "shift-scheduling", "leaves", "leave-approvals", "leave-policies", "leave-reports"],
-  Leave: ["leaves", "leave-approvals", "leave-policies", "leave-reports"],
+  "Time & Leave": ["attendance", "shift-scheduling", "benefits-claims", "leaves", "leave-approvals", "leave-policies", "attendance-leave-policies", "leave-reports", "reports", "insights"],
+  Time: ["attendance", "shift-scheduling", "leaves", "leave-approvals", "leave-policies", "attendance-leave-policies", "leave-reports"],
+  Leave: ["leaves", "leave-approvals", "leave-policies", "attendance-leave-policies", "leave-reports"],
   Payroll: ["payroll-settings", "payroll-operations", "salary-templates", "employee-salary", "payslips"],
   Workbench: ["inbox", "completed"],
   Inbox: ["inbox"],
@@ -699,8 +702,8 @@ const groupedSectionsByNavLabel: Partial<Record<string, ActiveSection[]>> = {
   Reports: ["reports", "leave-reports"],
   "Tenant Operations": ["tenant-operations", "hr-command-center", "operations-workbench", "workflow-inbox", "hr-helpdesk", "employee-relations", "employees", "workforce-hub", "engagements", "projects", "work-logs", "compliance", "skills", "skill-gaps", "learning", "talent-marketplace", "succession-planning", "asset-access", "okrs", "performance", "wellbeing", "people-analytics", "attendance", "shift-scheduling", "benefits-claims", "leaves", "leave-approvals", "leave-policies", "leave-reports", "reports", "insights", "payroll-operations", "flexible-payroll", "compensation-review", "employee-salary", "payslips", "employee-letters", "agreements", "document-sign", "employee-exits"],
   "Tenant Support": ["tenant-operations"],
-  "Company Setup": ["branches", "departments", "designations", "workforce-types", "document-requirements", "lookups", "financial-years", "working-hours", "holidays", "leave-types", "leave-policies", "policies", "privacy-ecosystem"],
-  Setup: ["portal-branding", "branches", "departments", "designations", "lookups", "financial-years", "working-hours", "holidays", "policies"],
+  "Company Setup": ["branches", "departments", "designations", "workforce-types", "document-requirements", "lookups", "financial-years", "working-hours", "holidays", "leave-types", "leave-policies", "attendance-leave-policies", "policies", "privacy-ecosystem"],
+  Setup: ["portal-branding", "branches", "departments", "designations", "lookups", "financial-years", "working-hours", "holidays", "attendance-leave-policies", "policies"],
   Documents: ["document-requirements", "employee-letters", "agreements", "document-sign", "my-onboarding"],
   Communication: ["notification-settings", "notification-center", "communication-providers", "storage-providers", "push-providers"],
   "System Operations": ["celebration-jobs", "notification-center", "notification-settings", "communication-providers", "storage-providers", "push-providers", "privacy-ecosystem"],
@@ -708,7 +711,7 @@ const groupedSectionsByNavLabel: Partial<Record<string, ActiveSection[]>> = {
   Commercial: ["subscription-plans", "subscriptions"],
   Subscriptions: ["subscription-plans", "subscriptions"],
   Support: ["notification-inbox", "notification-center"],
-  Settings: ["branches", "departments", "designations", "workforce-types", "document-requirements", "lookups", "financial-years", "working-hours", "holidays", "leave-types", "leave-policies", "payroll-settings", "salary-templates", "policies"],
+  Settings: ["branches", "departments", "designations", "workforce-types", "document-requirements", "lookups", "financial-years", "working-hours", "holidays", "leave-types", "leave-policies", "attendance-leave-policies", "payroll-settings", "salary-templates", "policies"],
 };
 
 function navLabelSection(label: string): ActiveSection | undefined {
@@ -1707,6 +1710,8 @@ export default function DashboardPage() {
             <LeaveFoundationSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
             <LeaveApprovalWorkflowsSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
           </>
+        ) : activeSection === "attendance-leave-policies" ? (
+          <AttendanceLeavePolicySetupSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "leaves" ? (
           <EmployeeLeavesSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "leave-approvals" ? (
