@@ -10,7 +10,7 @@ import { apiRequest } from "@/lib/api";
 type SetupOption = { id: string; name?: string; branch_name?: string; description?: string | null; is_required?: boolean; instructions?: string | null; allowed_content_types?: string; max_file_size_bytes?: number; display_order?: number };
 type ViewMode = "list" | "grid";
 type TenantSortKey = "name" | "status" | "plan" | "joined";
-type EmployeeEditTab = "identity" | "job" | "personal" | "payroll" | "statutory" | "roles";
+type EmployeeEditTab = "identity" | "job" | "personal" | "payroll" | "statutory" | "documents" | "roles";
 
 type IdentityRole = {
   id: string;
@@ -273,6 +273,7 @@ const employeeEditTabs: { id: EmployeeEditTab; label: string }[] = [
   { id: "personal", label: "Personal" },
   { id: "payroll", label: "Payroll" },
   { id: "statutory", label: "Statutory" },
+  { id: "documents", label: "Documents" },
   { id: "roles", label: "Roles & Access" },
 ];
 const genderOptions = ["Female", "Male", "Non-binary", "Prefer not to say"];
@@ -1141,7 +1142,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
     try {
       const [rolesResult, assignedResult] = await Promise.all([
         apiRequest<IdentityRole[]>("/roles/"),
-        apiRequest<IdentityRole[]>(`/users/${userID}/roles`),
+        apiRequest<IdentityRole[]>(`/users/${userID}/roles/`),
       ]);
       const assignableRoles = rolesResult.filter((role) => isEmployeeAssignableTenantRole(role, employeeTenantID));
       const assignableRoleIDs = new Set(assignableRoles.map((role) => role.id));
@@ -1225,6 +1226,44 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
     }
   }
 
+  async function uploadProfilePhoto(file: File | undefined) {
+    if (!file || !editForm) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("Profile photo must be JPG, PNG, or WebP.");
+      setActiveEditTab("identity");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const content = await readFileAsBase64(file);
+      const document = await apiRequest<EmployeeDocument>(`${basePath}/employees/${employeeID}/documents`, {
+        method: "POST",
+        body: {
+          document_type_id: null,
+          title: "Profile Photo",
+          file_name: file.name,
+          file_content_type: file.type || "application/octet-stream",
+          file_content_base64: content,
+        },
+      });
+      if (!document.file_path) {
+        throw new Error("Profile photo was uploaded but no storage path was returned.");
+      }
+      const nextForm = { ...editForm, profilePhotoPath: document.file_path };
+      const result = await apiRequest<EmployeeProfile>(`${basePath}/employees/${employeeID}`, { method: "PUT", body: employeeUpdatePayload(nextForm) });
+      setProfile(result);
+      setEditForm(profileToEditForm(result));
+      await loadProfile();
+      setSuccess("Profile photo uploaded.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to upload profile photo.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editForm) return;
@@ -1268,7 +1307,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
       const current = new Set(assignedRoles.filter((role) => assignableRoleIDs.has(role.id)).map((role) => role.id));
       const desired = new Set(selectedRoleIDs.filter((roleID) => assignableRoleIDs.has(roleID)));
       await Promise.all([
-        ...Array.from(desired).filter((roleID) => !current.has(roleID)).map((roleID) => apiRequest<void>(`/users/${profile.employee.user_id}/roles`, { method: "POST", body: { role_id: roleID } })),
+        ...Array.from(desired).filter((roleID) => !current.has(roleID)).map((roleID) => apiRequest<void>(`/users/${profile.employee.user_id}/roles/`, { method: "POST", body: { role_id: roleID } })),
         ...Array.from(current).filter((roleID) => !desired.has(roleID)).map((roleID) => apiRequest<void>(`/users/${profile.employee.user_id}/roles/${roleID}`, { method: "DELETE" })),
       ]);
       await loadUserRoles(profile.employee.user_id, profile.employee.tenant_id);
@@ -1312,8 +1351,8 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
     }
   }
 
-  async function saveDocument(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function saveDocument(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     setSavingDocument(true);
     setError("");
     setSuccess("");
@@ -1476,7 +1515,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
           {editForm ? (
             <HrmsModal description="Update one employee section at a time. Access roles are tenant-scoped and saved separately." onClose={() => setEditOpen(false)} open={editOpen} title={`Edit ${fullName(employee)}`}>
               <form className="space-y-5" onSubmit={saveProfile}>
-                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-7">
                   {employeeEditTabs.map((tab) => (
                     <button className={`rounded-2xl border px-3 py-3 text-xs font-black ${activeEditTab === tab.id ? "border-[#588368] bg-[#eef4f1] text-[#315f3d]" : "border-[#edf1ef] bg-white text-[#6b7280] hover:border-[#b9c8c0]"}`} key={tab.id} onClick={() => setActiveEditTab(tab.id)} type="button">{tab.label}</button>
                   ))}
@@ -1492,7 +1531,11 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
                       <Field label="Employee code" value={editForm.employeeCode} onChange={(value) => updateEdit("employeeCode", value)} />
                       <Field label="Email" type="email" value={editForm.email} onChange={(value) => updateEdit("email", value)} />
                       <Field label="Mobile" required value={editForm.mobile} onChange={(value) => updateEdit("mobile", value)} />
-                      <Field label="Profile photo path" value={editForm.profilePhotoPath} onChange={(value) => updateEdit("profilePhotoPath", value)} wide />
+                      <label className="block text-sm font-bold text-[#374151] md:col-span-2">
+                        Profile photo
+                        <input accept="image/jpeg,image/png,image/webp" className="mt-2 block w-full rounded-xl border border-dashed border-[#b9c8c0] bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#4b5563] file:mr-4 file:rounded-lg file:border-0 file:bg-[#588368] file:px-4 file:py-2 file:text-sm file:font-black file:text-white" disabled={saving} onChange={(event) => void uploadProfilePhoto(event.target.files?.[0])} type="file" />
+                        {editForm.profilePhotoPath ? <span className="mt-2 block truncate text-xs font-semibold text-[#6b7280]">{editForm.profilePhotoPath}</span> : null}
+                      </label>
                     </div>
                   </section>
                 ) : null}
@@ -1568,6 +1611,53 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
                       <CheckField label="ESIC applicable" checked={editForm.esicApplicable} onChange={(value) => updateEdit("esicApplicable", value)} />
                       <CheckField label="PT applicable" checked={editForm.ptApplicable} onChange={(value) => updateEdit("ptApplicable", value)} />
                       <CheckField label="LWF applicable" checked={editForm.lwfApplicable} onChange={(value) => updateEdit("lwfApplicable", value)} />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "documents" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Documents</h3>
+                        <p className="mt-1 text-sm font-semibold text-[#6b7280]">Upload employee documents and review existing files.</p>
+                      </div>
+                      <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{profile.documents.length} documents</span>
+                    </div>
+                    <div className="mt-5 rounded-2xl border border-[#edf1ef] bg-[#f8faf9] p-4">
+                      <h4 className="text-xs font-black uppercase tracking-wide text-[#588368]">Upload Document</h4>
+                      <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        <SelectField label="Document type" value={documentForm.documentTypeID} onChange={(value) => updateDocumentForm("documentTypeID", value)} options={profile.lookups.document_types} />
+                        <Field label="Title" value={documentForm.title} onChange={(value) => updateDocumentForm("title", value)} />
+                        <Field label="Existing document link" placeholder="Optional if file is uploaded" value={documentForm.filePath} onChange={(value) => updateDocumentForm("filePath", value)} wide />
+                        <label className="block text-sm font-bold text-[#374151] md:col-span-2">
+                          Upload file
+                          <input accept={selectedDocumentType?.allowed_content_types || undefined} className="mt-2 block w-full rounded-xl border border-dashed border-[#b9c8c0] bg-white px-4 py-3 text-sm font-semibold text-[#4b5563] file:mr-4 file:rounded-lg file:border-0 file:bg-[#588368] file:px-4 file:py-2 file:text-sm file:font-black file:text-white" onChange={(event) => void handleDocumentFile(event.target.files?.[0])} type="file" />
+                        </label>
+                      </div>
+                      {selectedDocumentType ? <p className="mt-3 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#6b7280]">Allowed: {selectedDocumentType.allowed_content_types || "standard HR document types"} · Max {Math.round((selectedDocumentType.max_file_size_bytes || 10485760) / 1024 / 1024)} MB</p> : null}
+                      {documentForm.fileName ? <p className="mt-3 rounded-lg bg-white px-3 py-2 text-xs font-bold text-[#588368]">Selected: {documentForm.fileName}</p> : null}
+                      <button className="mt-4 rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white hover:bg-[#456d58] disabled:opacity-60" disabled={savingDocument} onClick={() => void saveDocument()} type="button">{savingDocument ? "Saving..." : "Save Document"}</button>
+                    </div>
+                    <div className="mt-5 grid gap-3">
+                      {profile.documents.map((document) => (
+                        <div className="rounded-xl border border-[#edf1ef] bg-[#f8faf9] p-4" key={document.id}>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-black uppercase tracking-wide text-[#588368]">{document.document_type_name || "Document"}</p>
+                              <h4 className="mt-1 font-black text-[#111827]">{document.title || "Untitled document"}</h4>
+                              <p className="mt-2 truncate rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#6b7280]">{document.original_file_name || document.file_path || "No file attached"}</p>
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <span className={`rounded-full px-3 py-1 text-xs font-black ${document.status === "approved" ? "bg-[#ecfdf3] text-[#16803c]" : document.status === "rejected" ? "bg-red-50 text-red-700" : "bg-[#fef3c7] text-[#92400e]"}`}>{documentStatusLabels[document.status || "pending_review"] || "Pending Review"}</span>
+                              <button className="rounded-lg border border-[#ccebd8] bg-[#f4fbf8] px-3 py-2 text-xs font-black text-[#16803c] hover:bg-[#ecfdf3] disabled:opacity-60" disabled={savingDocument} onClick={() => void reviewDocument(document.id, "approved")} type="button">Approve</button>
+                              <button className="rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs font-black text-[#92400e] hover:bg-[#fef3c7] disabled:opacity-60" disabled={savingDocument} onClick={() => void reviewDocument(document.id, "resubmission_requested")} type="button">Ask Again</button>
+                              <button className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-700 hover:bg-red-50 disabled:opacity-60" disabled={savingDocument} onClick={() => void deleteDocument(document.id)} type="button">Remove</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {profile.documents.length === 0 ? <EmptyText text="No documents added yet." /> : null}
                     </div>
                   </section>
                 ) : null}
