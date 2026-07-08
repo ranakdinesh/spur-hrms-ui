@@ -226,7 +226,236 @@ function normalizeAttendanceReport(value: AttendanceReport | null | undefined): 
   };
 }
 
-export function AttendanceSection({ isSuperAdmin, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
+export function AttendanceSection({ isSuperAdmin, selfServiceOnly = false, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; selfServiceOnly?: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
+  if (selfServiceOnly) {
+    return <MyAttendanceSelfService />;
+  }
+  return <AttendanceOperationsSection isSuperAdmin={isSuperAdmin} tenants={tenants} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />;
+}
+
+function MyAttendanceSelfService() {
+  const [date, setDate] = useState(todayKey());
+  const [workMode, setWorkMode] = useState("office");
+  const [source, setSource] = useState("web");
+  const [remarks, setRemarks] = useState("");
+  const [location, setLocation] = useState<LocationState>(null);
+  const [locationMessage, setLocationMessage] = useState("");
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [items, setItems] = useState<Attendance[]>([]);
+  const [statusRows, setStatusRows] = useState<AttendanceStatusRow[]>([]);
+  const [requests, setRequests] = useState<AttendanceRequest[]>([]);
+  const [requestForm, setRequestForm] = useState({ request_type: "missed_punch", requested_type: "missed_punch", requested_checkin_at: "", requested_checkout_at: "", requested_work_mode: "office", reason: "" });
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const selectedStatus = statusRows[0] || null;
+  const attendanceRequired = selectedStatus?.status !== "not_applicable";
+  const counts = useMemo(() => {
+    const checkins = items.filter((item) => item.type === "checkin").length;
+    const checkouts = items.filter((item) => item.type === "checkout").length;
+    return { checkins, checkouts, open: checkins > checkouts };
+  }, [items]);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const query = new URLSearchParams({ date });
+      const [attendanceData, statusData, requestData] = await Promise.all([
+        apiRequest<Attendance[]>(`/hrms/attendances?${query.toString()}`),
+        apiRequest<AttendanceStatusRow[]>(`/hrms/attendances/status?${query.toString()}`),
+        apiRequest<AttendanceRequest[]>("/hrms/attendance-requests"),
+      ]);
+      setItems(attendanceData);
+      setStatusRows(statusData);
+      setRequests(requestData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load my attendance.");
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadData(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadData]);
+
+  async function captureLocation(): Promise<AttendanceLocation> {
+    setLocationMessage("");
+    setLocationLoading(true);
+    try {
+      const captured = await requestAttendanceLocation();
+      setLocation(captured);
+      setLocationMessage("Location ready for the next punch.");
+      return captured;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Location permission is required to mark attendance.";
+      setLocationMessage(message);
+      throw new Error(message);
+    } finally {
+      setLocationLoading(false);
+    }
+  }
+
+  async function punch(action: "checkin" | "checkout") {
+    setMessage("");
+    setError("");
+    if (!attendanceRequired) {
+      setError("Attendance is not required today.");
+      return;
+    }
+    try {
+      const punchLocation = location || await captureLocation();
+      await apiRequest("/hrms/attendances/punch", {
+        method: "POST",
+        body: {
+          action,
+          date,
+          time: new Date().toISOString(),
+          source,
+          work_mode: workMode,
+          latitude: punchLocation.latitude,
+          longitude: punchLocation.longitude,
+          remarks: remarks || undefined,
+        },
+      });
+      setMessage(action === "checkin" ? "Check-in captured." : "Check-out captured.");
+      setRemarks("");
+      setLocation(null);
+      setLocationMessage("");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to punch attendance.");
+    }
+  }
+
+  async function createAttendanceRequest() {
+    setMessage("");
+    setError("");
+    try {
+      const toISO = (value: string) => value ? new Date(`${date}T${value}:00`).toISOString() : undefined;
+      await apiRequest("/hrms/attendance-requests", {
+        method: "POST",
+        body: {
+          ...requestForm,
+          date,
+          requested_checkin_at: toISO(requestForm.requested_checkin_at),
+          requested_checkout_at: toISO(requestForm.requested_checkout_at),
+          reason: requestForm.reason || undefined,
+        },
+      });
+      setMessage("Attendance regularization request submitted.");
+      setRequestForm((current) => ({ ...current, reason: "" }));
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to submit attendance request.");
+    }
+  }
+
+  function prepareMissingCheckoutRequest() {
+    const now = new Date();
+    setRequestForm((current) => ({
+      ...current,
+      request_type: "missed_punch",
+      requested_type: "checkout",
+      requested_checkin_at: selectedStatus?.first_check_in ? new Date(selectedStatus.first_check_in).toTimeString().slice(0, 5) : current.requested_checkin_at,
+      requested_checkout_at: now.toTimeString().slice(0, 5),
+      requested_work_mode: workMode,
+      reason: current.reason || "Forgot to check out. Please regularize the missing checkout.",
+    }));
+    setMessage("Missing checkout request is ready. Review it and submit.");
+  }
+
+  return (
+    <section className="px-4 py-6 lg:px-6 lg:py-8">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.22em] text-[#588368]">Self Service</p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-[#172033]">My Attendance</h1>
+        </div>
+        <button className="rounded-xl border border-[#dbe8e1] bg-white px-5 py-3 text-sm font-black text-[#588368]" onClick={() => void loadData()} type="button">Refresh</button>
+      </div>
+
+      {message ? <p className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">{message}</p> : null}
+      {error ? <p className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</p> : null}
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(340px,0.55fr)]">
+        <div className="space-y-6">
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-[#588368]">{fmtDate(date)}</p>
+                <h2 className="mt-2 text-2xl font-black text-[#172033]">{selectedStatus ? titleCase(selectedStatus.status) : counts.open ? "Checked In" : "Not Checked In"}</h2>
+                <p className="mt-1 text-sm font-semibold text-[#6b7280]">{selectedStatus?.reason || `${counts.checkins} check-in / ${counts.checkouts} check-out`}</p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-black ${counts.open ? "bg-emerald-50 text-emerald-700" : "bg-[#eef4f1] text-[#588368]"}`}>{counts.open ? "Active" : "Idle"}</span>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <button className="rounded-2xl bg-[#588368] px-5 py-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9fb4a6]" disabled={loading || locationLoading || counts.open || !attendanceRequired} onClick={() => void punch("checkin")} type="button">{locationLoading ? "Locating..." : "Check In"}</button>
+              <button className="rounded-2xl bg-[#e87839] px-5 py-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#d1d5db]" disabled={loading || locationLoading || !counts.open || !attendanceRequired} onClick={() => void punch("checkout")} type="button">{locationLoading ? "Locating..." : "Check Out"}</button>
+            </div>
+            <div className="mt-4 grid gap-3 rounded-2xl bg-[#f8faf9] p-4 text-xs font-semibold text-[#6b7280] sm:grid-cols-2">
+              <span>Working hours: {selectedStatus?.working_hour ? `${selectedStatus.working_hour.start_time} - ${selectedStatus.working_hour.end_time}` : "-"}</span>
+              <span>Worked: {selectedStatus ? fmtMinutes(selectedStatus.worked_minutes) : "-"}</span>
+              <span>First in: {fmtTime(selectedStatus?.first_check_in)}</span>
+              <span>Last out: {fmtTime(selectedStatus?.last_check_out)}</span>
+            </div>
+            {!attendanceRequired ? <p className="mt-4 rounded-xl bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">Attendance is not required for this date.</p> : null}
+            {selectedStatus?.status === "incomplete" ? <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="text-sm font-bold text-amber-900">Checkout is missing for this day.</p><button className="mt-3 rounded-xl bg-amber-700 px-4 py-2.5 text-sm font-black text-white" onClick={prepareMissingCheckoutRequest} type="button">Prepare Regularization</button></div> : null}
+          </section>
+
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-black text-[#172033]">Punch Context</h2>
+            <div className="mt-4 grid gap-3">
+              <input className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setDate(event.target.value)} type="date" value={date} />
+              <div className="grid gap-3 md:grid-cols-2">
+                <select className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setWorkMode(event.target.value)} value={workMode}>{workModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+                <select className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setSource(event.target.value)} value={source}>{sources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+              </div>
+              <textarea className="min-h-20 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(event) => setRemarks(event.target.value)} placeholder="Remarks for this punch" value={remarks} />
+              <button className="rounded-xl border border-[#dbe8e1] bg-[#f8faf9] px-5 py-3 text-sm font-black text-[#588368] disabled:opacity-60" disabled={locationLoading} onClick={() => void captureLocation().catch(() => undefined)} type="button">{locationLoading ? "Locating..." : location ? "Refresh current location" : "Use current location"}</button>
+              <p className="text-xs font-semibold text-[#6b7280]">{location ? `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}` : locationMessage || "Location is saved only with the punch record."}</p>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-black text-[#172033]">Punch Timeline</h2>
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full min-w-[680px] text-left text-sm">
+                <thead className="bg-[#f8faf9] text-xs font-black uppercase tracking-wide text-[#6b7280]"><tr><th className="p-3">Time</th><th className="p-3">Action</th><th className="p-3">Work Mode</th><th className="p-3">Source</th><th className="p-3">Remarks</th></tr></thead>
+                <tbody>{items.map((item) => <tr className="border-t border-[#edf1ef]" key={item.id}><td className="p-3 font-black text-[#172033]">{fmtTime(item.time || item.created_at)}</td><td className="p-3"><span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{titleCase(item.type)}</span></td><td className="p-3">{titleCase(item.work_mode)}</td><td className="p-3">{titleCase(item.source)}</td><td className="p-3 text-[#6b7280]">{item.remarks || "-"}</td></tr>)}</tbody>
+              </table>
+            </div>
+            {items.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-4 text-sm font-semibold text-[#6b7280]">No punches found for this date.</p> : null}
+          </section>
+        </div>
+
+        <aside className="space-y-6">
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-black text-[#172033]">Regularization</h2>
+            <div className="mt-4 grid gap-3">
+              <select className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold" onChange={(e) => setRequestForm((c) => ({ ...c, request_type: e.target.value, requested_type: e.target.value }))} value={requestForm.request_type}><option value="missed_punch">Missed punch</option><option value="late_exemption">Late exemption</option><option value="early_exit_exemption">Early exit exemption</option><option value="wfh">WFH</option><option value="halfday">Half day</option><option value="absent">Absent correction</option></select>
+              <select className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold" onChange={(e) => setRequestForm((c) => ({ ...c, requested_work_mode: e.target.value }))} value={requestForm.requested_work_mode}>{workModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+              <div className="grid gap-3 sm:grid-cols-2"><input className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold" onChange={(e) => setRequestForm((c) => ({ ...c, requested_checkin_at: e.target.value }))} type="time" value={requestForm.requested_checkin_at} /><input className="h-11 rounded-xl border border-[#dbe8e1] px-3 text-sm font-bold" onChange={(e) => setRequestForm((c) => ({ ...c, requested_checkout_at: e.target.value }))} type="time" value={requestForm.requested_checkout_at} /></div>
+              <textarea className="min-h-20 rounded-xl border border-[#dbe8e1] px-3 py-2 text-sm" onChange={(e) => setRequestForm((c) => ({ ...c, reason: e.target.value }))} placeholder="Reason for correction" value={requestForm.reason} />
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white" onClick={() => void createAttendanceRequest()} type="button">Submit Request</button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[#dfe6e2] bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-black text-[#172033]">My Requests</h2>
+            <div className="mt-4 space-y-3">{requests.map((item) => <article className="rounded-xl border border-[#edf1ef] p-4" key={item.id}><p className="text-sm font-black text-[#172033]">{titleCase(item.request_type)} · {fmtDate(item.date)}</p><p className="mt-1 text-xs font-semibold text-[#6b7280]">{item.reason || "No reason"} · {titleCase(item.status)}</p></article>)}</div>
+            {requests.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-4 text-sm font-semibold text-[#6b7280]">No attendance requests found.</p> : null}
+          </section>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function AttendanceOperationsSection({ isSuperAdmin, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
   const sortedTenants = useMemo(() => [...tenants].sort((a, b) => tenantSortValue(a).localeCompare(tenantSortValue(b))), [tenants]);
   const [selectedTenantID, setSelectedTenantID] = useState("");
   const basePath = isSuperAdmin && selectedTenantID ? `/hrms/tenants/${selectedTenantID}` : "/hrms";

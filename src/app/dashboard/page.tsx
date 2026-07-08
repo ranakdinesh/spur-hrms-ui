@@ -525,7 +525,7 @@ const managerNavItems: NavItem[] = [
       { label: "Workflow Inbox", permission: "hrms.workflow.tasks.list" },
     ],
   },
-  { icon: "◷", label: "Attendance", permission: "hrms.attendance.check_in" },
+  { icon: "◷", label: "My Attendance", permission: "hrms.attendance.check_in" },
   {
     icon: "◱",
     label: "Leave",
@@ -660,6 +660,7 @@ const sectionByNavLabel: Record<string, ActiveSection> = {
   Insights: "insights",
   "People Analytics": "people-analytics",
   Attendance: "attendance",
+  "My Attendance": "attendance",
   "Shift Scheduling": "shift-scheduling",
   "Benefits & Claims": "benefits-claims",
   Documents: "my-onboarding",
@@ -1086,6 +1087,7 @@ export default function DashboardPage() {
   const canOpenHrDashboard = canUseHrDashboard(currentUser);
   const canUseOperationsWorkbench = canView(currentUser, "hrms.operations_workbench.view");
   const canOpenWorkbench = canView(currentUser, "hrms.dashboard.employee.view") || canView(currentUser, "hrms.workflow.tasks.list") || canView(currentUser, "hrms.workflow_tasks.list");
+  const attendanceSelfServiceOnly = !isSuperAdmin && !canView(currentUser, "hrms.attendance.operations.view") && !canUseHrDashboard(currentUser);
   const canManageDesignationAttendanceRequirement = isSuperAdmin || canView(currentUser, "hrms.designations.attendance_requirement.update") || (currentUser?.roles || []).map(normalizeRoleCode).includes("TENANT_ADMIN");
   const homeSection = defaultSectionForUser(currentUser);
   const pendingSignupRequestCount = signupRequests.filter((request) => request.status === "pending_email_verification" || request.status === "email_verified").length;
@@ -1723,7 +1725,7 @@ export default function DashboardPage() {
         ) : activeSection === "insights" ? (
           <InsightsSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "attendance" ? (
-          <AttendanceSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
+          <AttendanceSection isSuperAdmin={isSuperAdmin} selfServiceOnly={attendanceSelfServiceOnly} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "shift-scheduling" ? (
           <ShiftSchedulingSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "benefits-claims" ? (

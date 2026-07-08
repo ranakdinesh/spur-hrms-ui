@@ -11,6 +11,7 @@ type FinancialYear = { id: string; name: string; is_active: boolean };
 type LeaveBalance = { id?: string; leave_type_id: string; leave_type_name?: string; total_days: number; used_days: number; pending_days: number; balance_days: number };
 type Leave = { id: string; user_id: string; leave_type_id: string; fy_id: string; start_date: string; end_date: string; start_day_type: DayType; end_day_type: DayType; days: number; reason?: string | null; status: string; is_sandwich: boolean; applied_date: string };
 type EmployeeDashboard = { leave?: { balances: Array<LeaveBalance & { leave_type_name: string }>; recent_requests: Leave[] } | null };
+type LeavePreview = { allowed: boolean; total_days: number; base_days: number; sandwich_days: number; is_sandwich: boolean; balance_before: number; balance_after: number; pending_after: number; paid_leave: boolean; blocking_reasons?: string[]; warnings?: string[]; requires_attachment: boolean; notice_required: boolean; notice_days: number; payroll_impact?: string; effective_policy?: { name: string; code: string } | null };
 type DayType = "fullday" | "firsthalf" | "secondhalf";
 type DurationMode = "full" | "firsthalf" | "secondhalf" | "custom";
 
@@ -72,6 +73,46 @@ function estimateLeaveDays(startDate: string, endDate: string, startDayType: Day
   return Math.max(0.5, days - 2 + startUnits + endUnits);
 }
 
+function LeavePreviewPanel({ preview }: { preview: LeavePreview | null }) {
+  if (!preview) return null;
+  const blockingReasons = preview.blocking_reasons || [];
+  const warnings = preview.warnings || [];
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${preview.allowed ? "border-emerald-100 bg-emerald-50" : "border-red-100 bg-red-50"}`}>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className={`text-sm font-black ${preview.allowed ? "text-emerald-800" : "text-red-800"}`}>{preview.allowed ? "Ready to submit" : "Cannot submit yet"}</p>
+          <p className="mt-1 text-xs font-bold text-[#6b7280]">Policy preview from current leave rules</p>
+        </div>
+        <span className={`rounded-full bg-white px-3 py-1 text-xs font-black ${preview.allowed ? "text-emerald-700" : "text-red-700"}`}>{formatDays(preview.total_days)} day{preview.total_days === 1 ? "" : "s"}</span>
+      </div>
+      <div className="mt-3 grid gap-2 text-xs font-bold text-[#374151] sm:grid-cols-3">
+        <span>Base {formatDays(preview.base_days)}</span>
+        <span>Sandwich {formatDays(preview.sandwich_days)}</span>
+        <span>After balance {formatDays(preview.balance_after)}</span>
+      </div>
+      <div className="mt-3 grid gap-2 text-xs font-bold text-[#6b7280] sm:grid-cols-2">
+        <span>Pending after {formatDays(preview.pending_after)}</span>
+        <span>{preview.paid_leave ? "Paid leave" : "Unpaid leave"}</span>
+        {preview.requires_attachment ? <span>Attachment required</span> : null}
+        {preview.notice_required ? <span>Notice {preview.notice_days} day{preview.notice_days === 1 ? "" : "s"}</span> : null}
+        {preview.payroll_impact ? <span>Payroll: {preview.payroll_impact}</span> : null}
+        {preview.effective_policy?.name ? <span>Policy: {preview.effective_policy.name}</span> : null}
+      </div>
+      {blockingReasons.length > 0 ? (
+        <ul className="mt-3 space-y-1 text-sm font-bold text-red-800">
+          {blockingReasons.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+      {warnings.length > 0 ? (
+        <ul className="mt-3 space-y-1 text-sm font-bold text-amber-800">
+          {warnings.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
   const sortedTenants = useMemo(() => [...tenants].sort((a, b) => tenantSortValue(a).localeCompare(tenantSortValue(b))), [tenants]);
   const [selectedTenantID, setSelectedTenantID] = useState("");
@@ -87,6 +128,8 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
   const [selectedFY, setSelectedFY] = useState("");
   const [durationMode, setDurationMode] = useState<DurationMode>("full");
   const [form, setForm] = useState({ leave_type_id: "", start_date: "", end_date: "", start_day_type: "fullday" as DayType, end_day_type: "fullday" as DayType, reason: "" });
+  const [preview, setPreview] = useState<{ key: string; result: LeavePreview } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [cancelRemarks, setCancelRemarks] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -96,6 +139,8 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
   const typeByID = useMemo(() => new Map(leaveTypes.map((item) => [item.id, item])), [leaveTypes]);
   const balanceByTypeID = useMemo(() => new Map(balances.map((item) => [item.leave_type_id, item])), [balances]);
   const selectedBalance = form.leave_type_id ? balanceByTypeID.get(form.leave_type_id) : undefined;
+  const previewKey = useMemo(() => [selectedTenantID, selectedUser, selectedFY, form.leave_type_id, form.start_date, form.end_date, form.start_day_type, form.end_day_type, isSuperAdmin ? "admin" : "self"].join("|"), [form.end_date, form.end_day_type, form.leave_type_id, form.start_date, form.start_day_type, isSuperAdmin, selectedFY, selectedTenantID, selectedUser]);
+  const currentPreview = preview?.key === previewKey ? preview.result : null;
   const estimatedDays = useMemo(() => estimateLeaveDays(form.start_date, form.end_date, form.start_day_type, form.end_day_type), [form.end_date, form.end_day_type, form.start_date, form.start_day_type]);
   const enabledLeaveTypes = useMemo(() => leaveTypes.filter((item) => item.is_enabled !== false), [leaveTypes]);
   const leaveOptions = useMemo(() => {
@@ -209,6 +254,10 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     event.preventDefault();
     setMessage("");
     setError("");
+    if (!currentPreview?.allowed) {
+      setError("Preview the leave request and resolve any blocking items before submitting.");
+      return;
+    }
     try {
       await apiRequest(`${basePath}/leaves`, {
         method: "POST",
@@ -228,6 +277,29 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to apply leave.");
+    }
+  }
+
+  async function previewLeave() {
+    setMessage("");
+    setError("");
+    setPreviewLoading(true);
+    try {
+      const result = await apiRequest<LeavePreview>(`${basePath}/leaves/preview`, {
+        method: "POST",
+        body: {
+          ...form,
+          user_id: isSuperAdmin ? selectedUser || undefined : undefined,
+          fy_id: isSuperAdmin ? selectedFY || undefined : undefined,
+          reason: form.reason || undefined,
+        },
+      });
+      setPreview({ key: previewKey, result });
+    } catch (err) {
+      setPreview(null);
+      setError(err instanceof Error ? err.message : "Unable to preview leave.");
+    } finally {
+      setPreviewLoading(false);
     }
   }
 
@@ -266,7 +338,8 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     );
   }
 
-  const submitDisabled = loading || !form.leave_type_id || !form.start_date || !form.end_date || (isSuperAdmin && (!selectedUser || !selectedFY));
+  const formReady = !loading && Boolean(form.leave_type_id && form.start_date && form.end_date) && (!isSuperAdmin || Boolean(selectedUser && selectedFY));
+  const submitDisabled = !formReady || !currentPreview?.allowed;
 
   return (
     <section className="px-4 py-6 lg:px-6 lg:py-8">
@@ -380,7 +453,12 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
                 {estimatedDays ? <span>Estimated {formatDays(estimatedDays)} day{estimatedDays === 1 ? "" : "s"} from {selectedBalance ? formatDays(selectedBalance.balance_days) : "0"} available.</span> : <span>Select dates to see the estimated duration.</span>}
               </div>
 
-              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
+              <LeavePreviewPanel preview={currentPreview} />
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button className="rounded-xl border border-[#588368] bg-white px-5 py-3 text-sm font-black text-[#588368] disabled:cursor-not-allowed disabled:opacity-60" disabled={!formReady || previewLoading} onClick={() => void previewLeave()} type="button">{previewLoading ? "Previewing..." : "Preview Leave"}</button>
+                <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
+              </div>
             </div>
           </form>
         </div>
