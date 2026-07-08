@@ -554,7 +554,7 @@ function PolicySetupWorkspace({ isSuperAdmin, onBack, tenant }: { isSuperAdmin: 
       apiRequest<SetupOption[]>(`${basePath}/branches`),
       apiRequest<SetupOption[]>(`${basePath}/departments`),
       apiRequest<SetupOption[]>(`${basePath}/designations`),
-      apiRequest<SetupOption[]>(`${basePath}/workforce-types`),
+      apiRequest<SetupOption[]>(`${basePath}/worker-types`),
       apiRequest<SetupOption[]>(`${basePath}/leave-types`),
     ]);
     setBranches(branchItems);
