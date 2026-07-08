@@ -719,6 +719,23 @@ function navItemActive(label: string, activeSection: ActiveSection) {
   return groupedSectionsByNavLabel[label]?.includes(activeSection) || navLabelSection(label) === activeSection;
 }
 
+function visibleSectionsFromNavItems(items: NavItem[]) {
+  const sections = new Set<ActiveSection>();
+  const addLabel = (label: string) => {
+    const section = navLabelSection(label);
+    if (section) {
+      sections.add(section);
+    }
+  };
+  for (const item of items) {
+    addLabel(item.label);
+    for (const child of item.children || []) {
+      addLabel(child.label);
+    }
+  }
+  return sections;
+}
+
 function dashboardSectionFromURL(fallback: ActiveSection) {
   if (typeof window === "undefined") return fallback;
   const params = new URLSearchParams(window.location.search);
@@ -805,6 +822,39 @@ function defaultSectionForUser(user: CurrentUser | null): ActiveSection {
     return "applicant-portal";
   }
   return canUseHrDashboard(user) ? "hr-command-center" : "employee-dashboard";
+}
+
+function allowedSectionsForUser(user: CurrentUser | null) {
+  const sections = new Set<ActiveSection>();
+  if (!user) {
+    return sections;
+  }
+  if (user.is_super_admin) {
+    Object.values(sectionByNavLabel).forEach((section) => sections.add(section));
+    Object.values(groupedSectionsByNavLabel).forEach((groupSections) => groupSections?.forEach((section) => sections.add(section)));
+    return sections;
+  }
+  const sourceItems = selectTenantNavItems(user);
+  for (const section of visibleSectionsFromNavItems(sourceItems)) {
+    sections.add(section);
+  }
+  sections.add(defaultSectionForUser(user));
+  if (canUseHrDashboard(user)) {
+    sections.add("hr-command-center");
+    sections.add("hr-dashboard");
+  }
+  if (canView(user, "hrms.operations_workbench.view")) {
+    sections.add("operations-workbench");
+  }
+  return sections;
+}
+
+function isSectionAllowedForUser(section: ActiveSection, user: CurrentUser | null) {
+  return allowedSectionsForUser(user).has(section);
+}
+
+function sectionForUserOrDefault(section: ActiveSection, user: CurrentUser | null) {
+  return isSectionAllowedForUser(section, user) ? section : defaultSectionForUser(user);
 }
 
 function currentUserPermissions(user: CurrentUser | null) {
@@ -1170,7 +1220,7 @@ export default function DashboardPage() {
         }
         if (!cancelled) {
           setCurrentUser(me);
-          setActiveSection(dashboardSectionFromURL(defaultSectionForUser(me)));
+          setActiveSection(sectionForUserOrDefault(dashboardSectionFromURL(defaultSectionForUser(me)), me));
           setReady(true);
         }
       } catch {
@@ -1197,7 +1247,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!ready) return;
     function handlePopState() {
-      const nextSection = dashboardSectionFromURL(defaultSectionForUser(currentUser));
+      const nextSection = sectionForUserOrDefault(dashboardSectionFromURL(defaultSectionForUser(currentUser)), currentUser);
       if (nextSection === activeSection) return;
       applyingBrowserHistoryRef.current = true;
       setActiveSection(nextSection);
