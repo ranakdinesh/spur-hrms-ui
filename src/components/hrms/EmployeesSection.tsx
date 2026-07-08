@@ -10,6 +10,17 @@ import { apiRequest } from "@/lib/api";
 type SetupOption = { id: string; name?: string; branch_name?: string; description?: string | null; is_required?: boolean; instructions?: string | null; allowed_content_types?: string; max_file_size_bytes?: number; display_order?: number };
 type ViewMode = "list" | "grid";
 type TenantSortKey = "name" | "status" | "plan" | "joined";
+type EmployeeEditTab = "identity" | "job" | "personal" | "payroll" | "statutory" | "roles";
+
+type IdentityRole = {
+  id: string;
+  tenant_id?: string;
+  tenantId?: string;
+  name: string;
+  code?: string | null;
+  description?: string | null;
+  is_system?: boolean;
+};
 
 type EmployeeRow = {
   id: string;
@@ -256,8 +267,18 @@ type OnboardingDocumentUpload = {
 };
 
 const onboardingSteps = ["Identity", "Personal", "Employment", "Documents", "Review"];
+const employeeEditTabs: { id: EmployeeEditTab; label: string }[] = [
+  { id: "identity", label: "Identity" },
+  { id: "job", label: "Job" },
+  { id: "personal", label: "Personal" },
+  { id: "payroll", label: "Payroll" },
+  { id: "statutory", label: "Statutory" },
+  { id: "roles", label: "Roles & Access" },
+];
 const genderOptions = ["Female", "Male", "Non-binary", "Prefer not to say"];
 const gradeOptions = ["Trainee", "Junior", "Associate", "Senior", "Lead", "Manager", "Director"];
+const platformRoleCodes = new Set(["SUPER_ADMIN", "PLATFORM_ADMIN", "PLATFORM_SUPPORT", "BILLING_OPS", "ACCESS_ADMIN", "READ_ONLY_AUDITOR", "IMPLEMENTATION_SPECIALIST", "PRODUCT_MANAGER"]);
+const nonEmployeeTenantRoleCodes = new Set(["APPLICANT"]);
 const probationStatuses = [
   { id: "not_applicable", name: "Not applicable" },
   { id: "probation", name: "Probation" },
@@ -288,6 +309,29 @@ function tenantSortValue(tenant: BranchTenantOption, key: TenantSortKey) {
 
 function optionLabel(item: SetupOption) {
   return item.name || item.branch_name || item.id;
+}
+
+function normalizeRoleCode(value?: string | null) {
+  return (value || "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+}
+
+function roleCode(role: IdentityRole) {
+  return normalizeRoleCode(role.code || role.name);
+}
+
+function roleName(role: IdentityRole) {
+  return role.name || role.code || role.id;
+}
+
+function roleTenantID(role: IdentityRole) {
+  return role.tenant_id || role.tenantId || "";
+}
+
+function isEmployeeAssignableTenantRole(role: IdentityRole, employeeTenantID?: string) {
+  const code = roleCode(role);
+  if (platformRoleCodes.has(code) || nonEmployeeTenantRoleCodes.has(code)) return false;
+  const tenantID = roleTenantID(role);
+  return !employeeTenantID || !tenantID || tenantID === employeeTenantID;
 }
 
 function managerOptions(employees: EmployeeRow[], excludedEmployeeID?: string): SetupOption[] {
@@ -1070,18 +1114,50 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
   const [profile, setProfile] = useState<EmployeeProfile | null>(null);
   const [credentialEvents, setCredentialEvents] = useState<EmployeeCredentialEvent[]>([]);
   const [editForm, setEditForm] = useState<EmployeeEditForm | null>(null);
+  const [tenantRoles, setTenantRoles] = useState<IdentityRole[]>([]);
+  const [assignedRoles, setAssignedRoles] = useState<IdentityRole[]>([]);
+  const [selectedRoleIDs, setSelectedRoleIDs] = useState<string[]>([]);
   const [managerRows, setManagerRows] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesSaving, setRolesSaving] = useState(false);
   const [savingDocument, setSavingDocument] = useState(false);
   const [savingDocumentType, setSavingDocumentType] = useState(false);
   const [credentialSaving, setCredentialSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [rolesError, setRolesError] = useState("");
   const [editOpen, setEditOpen] = useState(false);
+  const [activeEditTab, setActiveEditTab] = useState<EmployeeEditTab>("identity");
   const [documentForm, setDocumentForm] = useState<EmployeeDocumentForm>(emptyDocumentForm);
   const [documentTypeName, setDocumentTypeName] = useState("");
   const [temporaryPassword, setTemporaryPassword] = useState("");
+
+  const loadUserRoles = useCallback(async (userID: string, employeeTenantID?: string) => {
+    if (!userID) return;
+    setRolesLoading(true);
+    setRolesError("");
+    try {
+      const [rolesResult, assignedResult] = await Promise.all([
+        apiRequest<IdentityRole[]>("/roles/"),
+        apiRequest<IdentityRole[]>(`/users/${userID}/roles`),
+      ]);
+      const assignableRoles = rolesResult.filter((role) => isEmployeeAssignableTenantRole(role, employeeTenantID));
+      const assignableRoleIDs = new Set(assignableRoles.map((role) => role.id));
+      const visibleAssignedRoles = assignedResult.filter((role) => assignableRoleIDs.has(role.id) || isEmployeeAssignableTenantRole(role, employeeTenantID));
+      setTenantRoles(assignableRoles);
+      setAssignedRoles(visibleAssignedRoles);
+      setSelectedRoleIDs(visibleAssignedRoles.filter((role) => assignableRoleIDs.has(role.id)).map((role) => role.id));
+    } catch (err) {
+      setTenantRoles([]);
+      setAssignedRoles([]);
+      setSelectedRoleIDs([]);
+      setRolesError(err instanceof Error ? err.message : "Unable to load employee role assignments.");
+    } finally {
+      setRolesLoading(false);
+    }
+  }, []);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -1096,12 +1172,13 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
       setEditForm(profileToEditForm(result));
       setManagerRows(employeeRows);
       setCredentialEvents(events);
+      await loadUserRoles(result.employee.user_id, result.employee.tenant_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load employee profile.");
     } finally {
       setLoading(false);
     }
-  }, [basePath, employeeID]);
+  }, [basePath, employeeID, loadUserRoles]);
 
   useEffect(() => {
     const timer = window.setTimeout(loadProfile, 0);
@@ -1125,6 +1202,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
   const experience = `${employee.experience_year || 0}y ${employee.experience_month || 0}m`;
   const address = [employee.address, employee.city, employee.state, employee.country, employee.pincode].filter(Boolean).join(", ");
   const reportingManager = managerRows.find((row) => row.user_id === employee.reporting_manager_id);
+  const accessRoleSummary = assignedRoles.length ? assignedRoles.map(roleName).join(", ") : employee.role || "Employee";
 
   function updateEdit<K extends keyof EmployeeEditForm>(key: K, value: EmployeeEditForm[K]) {
     setEditForm((current) => (current ? { ...current, [key]: value } : current));
@@ -1163,6 +1241,42 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
       setError(err instanceof Error ? err.message : "Unable to update employee profile.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function toggleSelectedRole(roleID: string, checked: boolean) {
+    setSelectedRoleIDs((current) => {
+      if (checked) return current.includes(roleID) ? current : [...current, roleID];
+      return current.filter((id) => id !== roleID);
+    });
+    setRolesError("");
+  }
+
+  async function saveRoleAssignments() {
+    if (!profile) return;
+    if (selectedRoleIDs.length === 0) {
+      setRolesError("Select at least one tenant role. Remove Employee only after adding another workforce role such as HR, Manager, Consultant, or Vendor.");
+      setActiveEditTab("roles");
+      return;
+    }
+    setRolesSaving(true);
+    setRolesError("");
+    setError("");
+    setSuccess("");
+    try {
+      const assignableRoleIDs = new Set(tenantRoles.map((role) => role.id));
+      const current = new Set(assignedRoles.filter((role) => assignableRoleIDs.has(role.id)).map((role) => role.id));
+      const desired = new Set(selectedRoleIDs.filter((roleID) => assignableRoleIDs.has(roleID)));
+      await Promise.all([
+        ...Array.from(desired).filter((roleID) => !current.has(roleID)).map((roleID) => apiRequest<void>(`/users/${profile.employee.user_id}/roles`, { method: "POST", body: { role_id: roleID } })),
+        ...Array.from(current).filter((roleID) => !desired.has(roleID)).map((roleID) => apiRequest<void>(`/users/${profile.employee.user_id}/roles/${roleID}`, { method: "DELETE" })),
+      ]);
+      await loadUserRoles(profile.employee.user_id, profile.employee.tenant_id);
+      setSuccess("Employee access roles updated.");
+    } catch (err) {
+      setRolesError(err instanceof Error ? err.message : "Unable to update employee roles.");
+    } finally {
+      setRolesSaving(false);
     }
   }
 
@@ -1299,7 +1413,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
       <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <button className="text-left text-sm font-black text-[#588368]" onClick={onBack} type="button">&lt; Back to employees</button>
         <div className="flex flex-wrap gap-2">
-          <button className="rounded-xl bg-[#588368] px-4 py-2 text-xs font-black text-white" onClick={() => setEditOpen(true)} type="button">Edit Employee</button>
+          <button className="rounded-xl bg-[#588368] px-4 py-2 text-xs font-black text-white" onClick={() => { setActiveEditTab("identity"); setEditOpen(true); }} type="button">Edit Employee</button>
           <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{profile.documents.length} Documents</span>
           <span className="rounded-full bg-[#eff6ff] px-3 py-1 text-xs font-black text-[#2563eb]">{profile.banks.length} Bank Records</span>
           <span className="rounded-full bg-[#fef3c7] px-3 py-1 text-xs font-black text-[#92400e]">{profile.lookups.document_types.length} Document Types</span>
@@ -1326,6 +1440,7 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
               <InfoRow label="Branch" value={employee.branch_name || "-"} />
               <InfoRow label="Employment" value={employee.employment_type_name || "-"} />
               <InfoRow label="Reporting Manager" value={reportingManager ? fullName(reportingManager) : "-"} />
+              <InfoRow label="Access Roles" value={accessRoleSummary} />
               <InfoRow label="Joining" value={displayDate(employee.joining_date)} />
               <InfoRow label="Grade" value={employee.grade || "-"} />
               <InfoRow label="Probation" value={`${probationStatuses.find((item) => item.id === employee.probation_status)?.name || employee.probation_status || "-"}${employee.is_payroll_staff ? " · Payroll" : ""}`} />
@@ -1359,79 +1474,146 @@ function EmployeeProfileView({ basePath, employeeID, onBack }: { basePath: strin
 
         <main className="space-y-5">
           {editForm ? (
-            <HrmsModal description="Update employee profile, work assignment, bank, and statutory details." onClose={() => setEditOpen(false)} open={editOpen} title={`Edit ${fullName(employee)}`}>
+            <HrmsModal description="Update one employee section at a time. Access roles are tenant-scoped and saved separately." onClose={() => setEditOpen(false)} open={editOpen} title={`Edit ${fullName(employee)}`}>
               <form className="space-y-5" onSubmit={saveProfile}>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <Field label="First name" required value={editForm.firstName} onChange={(value) => updateEdit("firstName", value)} />
-                  <Field label="Middle name" value={editForm.middleName} onChange={(value) => updateEdit("middleName", value)} />
-                  <Field label="Last name" value={editForm.lastName} onChange={(value) => updateEdit("lastName", value)} />
-                  <Field label="Employee code" value={editForm.employeeCode} onChange={(value) => updateEdit("employeeCode", value)} />
-                  <Field label="Email" type="email" value={editForm.email} onChange={(value) => updateEdit("email", value)} />
-                  <Field label="Mobile" required value={editForm.mobile} onChange={(value) => updateEdit("mobile", value)} />
-                  <label className="block text-sm font-bold text-[#374151]">Role<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" value={editForm.role} onChange={(event) => updateEdit("role", event.target.value)}><option value="employee">Employee</option><option value="manager">Manager</option><option value="hr">HR</option></select></label>
-                  <Field label="Date of birth" type="date" value={editForm.dob} onChange={(value) => updateEdit("dob", value)} />
-                  <label className="block text-sm font-bold text-[#374151]">Gender<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" onChange={(event) => updateEdit("gender", event.target.value)} value={editForm.gender}><option value="">Select gender</option>{genderOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-                  <Field label="Marital status" value={editForm.maritalStatus} onChange={(value) => updateEdit("maritalStatus", value)} />
-                  <Field label="Blood group" value={editForm.bloodGroup} onChange={(value) => updateEdit("bloodGroup", value)} />
-                  <Field label="Joining date" type="date" value={editForm.joiningDate} onChange={(value) => updateEdit("joiningDate", value)} />
-                  <Field label="Resignation date" type="date" value={editForm.resignationDate} onChange={(value) => updateEdit("resignationDate", value)} />
-                  <SelectField label="Branch" value={editForm.branchID} onChange={(value) => updateEdit("branchID", value)} options={profile.lookups.branches} />
-                  <SelectField label="Department" value={editForm.departmentID} onChange={(value) => updateEdit("departmentID", value)} options={profile.lookups.departments} />
-                  <SelectField label="Designation" value={editForm.designationID} onChange={(value) => updateEdit("designationID", value)} options={profile.lookups.designations} />
-                  <SelectField label="Reporting manager" value={editForm.reportingManagerID} onChange={(value) => updateEdit("reportingManagerID", value)} options={managerOptions(managerRows, employee.id)} />
-                  <SelectField label="Employment type" value={editForm.employmentTypeID} onChange={(value) => updateEdit("employmentTypeID", value)} options={profile.lookups.employment_types} />
-                  <label className="block text-sm font-bold text-[#374151]">Grade<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" onChange={(event) => updateEdit("grade", event.target.value)} value={editForm.grade}><option value="">Select grade</option>{gradeOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-                  <Field label="Profile photo path" value={editForm.profilePhotoPath} onChange={(value) => updateEdit("profilePhotoPath", value)} />
-                  <Field label="Experience years" type="number" value={editForm.experienceYear} onChange={(value) => updateEdit("experienceYear", value)} />
-                  <Field label="Experience months" type="number" value={editForm.experienceMonth} onChange={(value) => updateEdit("experienceMonth", value)} />
-                  <Field label="Emergency contact" value={editForm.emergencyContact} onChange={(value) => updateEdit("emergencyContact", value)} />
-                  <Field label="Address" value={editForm.address} onChange={(value) => updateEdit("address", value)} wide />
-                  <Field label="City" value={editForm.city} onChange={(value) => updateEdit("city", value)} />
-                  <Field label="State" value={editForm.state} onChange={(value) => updateEdit("state", value)} />
-                  <Field label="Country" value={editForm.country} onChange={(value) => updateEdit("country", value)} />
-                  <Field label="Pincode" value={editForm.pincode} onChange={(value) => updateEdit("pincode", value)} />
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {employeeEditTabs.map((tab) => (
+                    <button className={`rounded-2xl border px-3 py-3 text-xs font-black ${activeEditTab === tab.id ? "border-[#588368] bg-[#eef4f1] text-[#315f3d]" : "border-[#edf1ef] bg-white text-[#6b7280] hover:border-[#b9c8c0]"}`} key={tab.id} onClick={() => setActiveEditTab(tab.id)} type="button">{tab.label}</button>
+                  ))}
                 </div>
-                <div className="rounded-2xl border border-[#edf1ef] bg-[#f8faf9] p-4">
-                  <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Probation</h3>
-                  <div className="mt-4 grid gap-4 md:grid-cols-3">
-                    <label className="flex items-center gap-3 rounded-xl border border-[#dbe0e5] bg-white px-4 py-3 text-sm font-black text-[#374151]"><input checked={editForm.isPayrollStaff} className="h-5 w-5 accent-[#588368]" onChange={(event) => updateEdit("isPayrollStaff", event.target.checked)} type="checkbox" /> Payroll staff</label>
-                    <SelectField label="Probation status" value={editForm.probationStatus} onChange={(value) => updateEdit("probationStatus", value)} options={probationStatuses} />
-                    <Field label="Duration days" type="number" value={editForm.probationDurationDays} onChange={(value) => updateEdit("probationDurationDays", value)} />
-                    <Field label="Start date" type="date" value={editForm.probationStartDate} onChange={(value) => updateEdit("probationStartDate", value)} />
-                    <Field label="End date" type="date" value={editForm.probationEndDate} onChange={(value) => updateEdit("probationEndDate", value)} />
-                    <Field label="Confirmed date" type="date" value={editForm.probationConfirmedAt} onChange={(value) => updateEdit("probationConfirmedAt", value)} />
+
+                {activeEditTab === "identity" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Identity</h3>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <Field label="First name" required value={editForm.firstName} onChange={(value) => updateEdit("firstName", value)} />
+                      <Field label="Middle name" value={editForm.middleName} onChange={(value) => updateEdit("middleName", value)} />
+                      <Field label="Last name" value={editForm.lastName} onChange={(value) => updateEdit("lastName", value)} />
+                      <Field label="Employee code" value={editForm.employeeCode} onChange={(value) => updateEdit("employeeCode", value)} />
+                      <Field label="Email" type="email" value={editForm.email} onChange={(value) => updateEdit("email", value)} />
+                      <Field label="Mobile" required value={editForm.mobile} onChange={(value) => updateEdit("mobile", value)} />
+                      <Field label="Profile photo path" value={editForm.profilePhotoPath} onChange={(value) => updateEdit("profilePhotoPath", value)} wide />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "job" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Job Assignment</h3>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <SelectField label="Branch" value={editForm.branchID} onChange={(value) => updateEdit("branchID", value)} options={profile.lookups.branches} />
+                      <SelectField label="Department" value={editForm.departmentID} onChange={(value) => updateEdit("departmentID", value)} options={profile.lookups.departments} />
+                      <SelectField label="Designation" value={editForm.designationID} onChange={(value) => updateEdit("designationID", value)} options={profile.lookups.designations} />
+                      <SelectField label="Reporting manager" value={editForm.reportingManagerID} onChange={(value) => updateEdit("reportingManagerID", value)} options={managerOptions(managerRows, employee.id)} />
+                      <SelectField label="Employment type" value={editForm.employmentTypeID} onChange={(value) => updateEdit("employmentTypeID", value)} options={profile.lookups.employment_types} />
+                      <label className="block text-sm font-bold text-[#374151]">Workforce classification<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" value={editForm.role} onChange={(event) => updateEdit("role", event.target.value)}><option value="employee">Employee</option><option value="manager">Manager</option><option value="hr">HR</option></select></label>
+                      <label className="block text-sm font-bold text-[#374151]">Grade<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" onChange={(event) => updateEdit("grade", event.target.value)} value={editForm.grade}><option value="">Select grade</option>{gradeOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                      <Field label="Joining date" type="date" value={editForm.joiningDate} onChange={(value) => updateEdit("joiningDate", value)} />
+                      <Field label="Resignation date" type="date" value={editForm.resignationDate} onChange={(value) => updateEdit("resignationDate", value)} />
+                      <Field label="Experience years" type="number" value={editForm.experienceYear} onChange={(value) => updateEdit("experienceYear", value)} />
+                      <Field label="Experience months" type="number" value={editForm.experienceMonth} onChange={(value) => updateEdit("experienceMonth", value)} />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "personal" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Personal Details</h3>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <Field label="Date of birth" type="date" value={editForm.dob} onChange={(value) => updateEdit("dob", value)} />
+                      <label className="block text-sm font-bold text-[#374151]">Gender<select className="mt-2 h-11 w-full rounded-xl border border-[#dbe0e5] bg-white px-4 font-normal outline-none focus:border-[#588368]" onChange={(event) => updateEdit("gender", event.target.value)} value={editForm.gender}><option value="">Select gender</option>{genderOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                      <Field label="Marital status" value={editForm.maritalStatus} onChange={(value) => updateEdit("maritalStatus", value)} />
+                      <Field label="Blood group" value={editForm.bloodGroup} onChange={(value) => updateEdit("bloodGroup", value)} />
+                      <Field label="Emergency contact" value={editForm.emergencyContact} onChange={(value) => updateEdit("emergencyContact", value)} />
+                      <Field label="Address" value={editForm.address} onChange={(value) => updateEdit("address", value)} wide />
+                      <Field label="City" value={editForm.city} onChange={(value) => updateEdit("city", value)} />
+                      <Field label="State" value={editForm.state} onChange={(value) => updateEdit("state", value)} />
+                      <Field label="Country" value={editForm.country} onChange={(value) => updateEdit("country", value)} />
+                      <Field label="Pincode" value={editForm.pincode} onChange={(value) => updateEdit("pincode", value)} />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "payroll" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Payroll & Bank</h3>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <label className="flex items-center gap-3 rounded-xl border border-[#dbe0e5] bg-[#f8faf9] px-4 py-3 text-sm font-black text-[#374151]"><input checked={editForm.isPayrollStaff} className="h-5 w-5 accent-[#588368]" onChange={(event) => updateEdit("isPayrollStaff", event.target.checked)} type="checkbox" /> Payroll staff</label>
+                      <SelectField label="Probation status" value={editForm.probationStatus} onChange={(value) => updateEdit("probationStatus", value)} options={probationStatuses} />
+                      <Field label="Duration days" type="number" value={editForm.probationDurationDays} onChange={(value) => updateEdit("probationDurationDays", value)} />
+                      <Field label="Start date" type="date" value={editForm.probationStartDate} onChange={(value) => updateEdit("probationStartDate", value)} />
+                      <Field label="End date" type="date" value={editForm.probationEndDate} onChange={(value) => updateEdit("probationEndDate", value)} />
+                      <Field label="Confirmed date" type="date" value={editForm.probationConfirmedAt} onChange={(value) => updateEdit("probationConfirmedAt", value)} />
+                      <Field label="Bank name" value={editForm.bankName} onChange={(value) => updateEdit("bankName", value)} />
+                      <Field label="Account number" value={editForm.accountNumber} onChange={(value) => updateEdit("accountNumber", value)} />
+                      <Field label="IFSC code" value={editForm.ifscCode} onChange={(value) => updateEdit("ifscCode", value)} />
+                      <Field label="Account type" value={editForm.accountType} onChange={(value) => updateEdit("accountType", value)} />
+                      <Field label="Bank branch" value={editForm.bankBranchName} onChange={(value) => updateEdit("bankBranchName", value)} />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "statutory" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Statutory Details</h3>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <Field label="PAN" value={editForm.pan} onChange={(value) => updateEdit("pan", value)} />
+                      <Field label="Aadhaar" value={editForm.aadhaar} onChange={(value) => updateEdit("aadhaar", value)} />
+                      <Field label="UAN" value={editForm.uanNo} onChange={(value) => updateEdit("uanNo", value)} />
+                      <Field label="PF number" value={editForm.pfNo} onChange={(value) => updateEdit("pfNo", value)} />
+                      <Field label="ESIC number" value={editForm.esicNo} onChange={(value) => updateEdit("esicNo", value)} />
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <CheckField label="PF applicable" checked={editForm.pfApplicable} onChange={(value) => updateEdit("pfApplicable", value)} />
+                      <CheckField label="ESIC applicable" checked={editForm.esicApplicable} onChange={(value) => updateEdit("esicApplicable", value)} />
+                      <CheckField label="PT applicable" checked={editForm.ptApplicable} onChange={(value) => updateEdit("ptApplicable", value)} />
+                      <CheckField label="LWF applicable" checked={editForm.lwfApplicable} onChange={(value) => updateEdit("lwfApplicable", value)} />
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab === "roles" ? (
+                  <section className="rounded-2xl border border-[#edf1ef] bg-white p-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Tenant Roles</h3>
+                        <p className="mt-1 text-sm font-semibold text-[#6b7280]">These roles control access through identity. Platform roles and applicant roles are not assignable here.</p>
+                      </div>
+                      <span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{selectedRoleIDs.length} selected</span>
+                    </div>
+                    {rolesError ? <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{rolesError}</p> : null}
+                    {rolesLoading ? <p className="mt-4 rounded-xl bg-[#f8faf9] px-4 py-3 text-sm font-semibold text-[#6b7280]">Loading tenant roles...</p> : null}
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      {tenantRoles.map((role) => {
+                        const checked = selectedRoleIDs.includes(role.id);
+                        return (
+                          <label className={`rounded-2xl border p-4 ${checked ? "border-[#588368] bg-[#eef4f1]" : "border-[#edf1ef] bg-[#f8faf9]"}`} key={role.id}>
+                            <span className="flex items-start gap-3">
+                              <input checked={checked} className="mt-1 h-5 w-5 accent-[#588368]" onChange={(event) => toggleSelectedRole(role.id, event.target.checked)} type="checkbox" />
+                              <span>
+                                <span className="block text-sm font-black text-[#111827]">{roleName(role)}</span>
+                                <span className="mt-1 block text-xs font-semibold uppercase tracking-wide text-[#6b7280]">{roleCode(role) || "CUSTOM_ROLE"}</span>
+                                {role.description ? <span className="mt-2 block text-xs font-semibold leading-5 text-[#6b7280]">{role.description}</span> : null}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {!rolesLoading && tenantRoles.length === 0 ? <EmptyText text="No tenant roles are available for this employee." /> : null}
+                    <div className="mt-5 flex flex-wrap gap-3 border-t border-[#edf1ef] pt-5">
+                      <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white hover:bg-[#456d58] disabled:opacity-60" disabled={rolesSaving || rolesLoading || tenantRoles.length === 0} onClick={() => void saveRoleAssignments()} type="button">{rolesSaving ? "Saving roles..." : "Save Role Assignments"}</button>
+                      <button className="rounded-xl border border-[#dbe0e5] px-5 py-3 text-sm font-black text-[#374151]" disabled={rolesSaving} onClick={() => setSelectedRoleIDs(assignedRoles.filter((role) => tenantRoles.some((tenantRole) => tenantRole.id === role.id)).map((role) => role.id))} type="button">Reset Roles</button>
+                    </div>
+                  </section>
+                ) : null}
+
+                {activeEditTab !== "roles" ? (
+                  <div className="flex gap-3">
+                    <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white hover:bg-[#456d58] disabled:opacity-60" disabled={saving} type="submit">{saving ? "Saving..." : "Save Changes"}</button>
+                    <button className="rounded-xl border border-[#dbe0e5] px-5 py-3 text-sm font-black text-[#374151]" onClick={() => setEditForm(profileToEditForm(profile))} type="button">Reset</button>
                   </div>
-                </div>
-                <div className="rounded-2xl border border-[#edf1ef] bg-[#f8faf9] p-4">
-                  <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Primary Bank</h3>
-                  <div className="mt-4 grid gap-4 md:grid-cols-3">
-                    <Field label="Bank name" value={editForm.bankName} onChange={(value) => updateEdit("bankName", value)} />
-                    <Field label="Account number" value={editForm.accountNumber} onChange={(value) => updateEdit("accountNumber", value)} />
-                    <Field label="IFSC code" value={editForm.ifscCode} onChange={(value) => updateEdit("ifscCode", value)} />
-                    <Field label="Account type" value={editForm.accountType} onChange={(value) => updateEdit("accountType", value)} />
-                    <Field label="Bank branch" value={editForm.bankBranchName} onChange={(value) => updateEdit("bankBranchName", value)} />
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-[#edf1ef] bg-[#f8faf9] p-4">
-                  <h3 className="text-sm font-black uppercase tracking-wide text-[#588368]">Statutory</h3>
-                  <div className="mt-4 grid gap-4 md:grid-cols-3">
-                    <Field label="PAN" value={editForm.pan} onChange={(value) => updateEdit("pan", value)} />
-                    <Field label="Aadhaar" value={editForm.aadhaar} onChange={(value) => updateEdit("aadhaar", value)} />
-                    <Field label="UAN" value={editForm.uanNo} onChange={(value) => updateEdit("uanNo", value)} />
-                    <Field label="PF number" value={editForm.pfNo} onChange={(value) => updateEdit("pfNo", value)} />
-                    <Field label="ESIC number" value={editForm.esicNo} onChange={(value) => updateEdit("esicNo", value)} />
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <CheckField label="PF applicable" checked={editForm.pfApplicable} onChange={(value) => updateEdit("pfApplicable", value)} />
-                    <CheckField label="ESIC applicable" checked={editForm.esicApplicable} onChange={(value) => updateEdit("esicApplicable", value)} />
-                    <CheckField label="PT applicable" checked={editForm.ptApplicable} onChange={(value) => updateEdit("ptApplicable", value)} />
-                    <CheckField label="LWF applicable" checked={editForm.lwfApplicable} onChange={(value) => updateEdit("lwfApplicable", value)} />
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white hover:bg-[#456d58] disabled:opacity-60" disabled={saving} type="submit">{saving ? "Saving..." : "Save Changes"}</button>
-                  <button className="rounded-xl border border-[#dbe0e5] px-5 py-3 text-sm font-black text-[#374151]" onClick={() => setEditForm(profileToEditForm(profile))} type="button">Reset</button>
-                </div>
+                ) : null}
               </form>
             </HrmsModal>
           ) : null}
