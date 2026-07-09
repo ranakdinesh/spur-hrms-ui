@@ -1759,7 +1759,7 @@ export default function DashboardPage() {
         ) : activeSection === "leaves" ? (
           <EmployeeLeavesSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "leave-approvals" ? (
-          <LeaveApprovalsSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
+          <LeaveApprovalsSection currentUserID={currentUser?.id} isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "leave-reports" ? (
           <LeaveReportsSection isSuperAdmin={isSuperAdmin} tenants={branchTenantOptions} tenantsError={tenantsError} tenantsLoading={tenantsLoading} />
         ) : activeSection === "reports" ? (

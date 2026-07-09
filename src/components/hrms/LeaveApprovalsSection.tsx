@@ -37,7 +37,7 @@ function formatDays(value = 0) {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 1 }).format(value);
 }
 
-export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, tenantsError }: { isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
+export function LeaveApprovalsSection({ currentUserID, isSuperAdmin, tenants, tenantsLoading, tenantsError }: { currentUserID?: string; isSuperAdmin: boolean; tenants: BranchTenantOption[]; tenantsLoading: boolean; tenantsError: string }) {
   const sortedTenants = useMemo(() => [...tenants].sort((a, b) => tenantSortValue(a).localeCompare(tenantSortValue(b))), [tenants]);
   const [selectedTenantID, setSelectedTenantID] = useState("");
   const basePath = isSuperAdmin && selectedTenantID ? `/hrms/tenants/${selectedTenantID}` : "/hrms";
@@ -59,6 +59,7 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
 
   const selectedLeave = selectedApproval ? leaveByID[selectedApproval.leave_id] : undefined;
   const selectedPreview = selectedApproval ? previewByLeaveID[selectedApproval.leave_id] : undefined;
+  const effectiveApproverID = approverID || (!isSuperAdmin ? currentUserID || "" : "");
 
   const loadEmployees = useCallback(async () => {
     if (!canLoad) return;
@@ -67,13 +68,13 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
     try {
       const data = await apiRequest<Employee[]>(`${basePath}/employees`);
       setEmployees(data);
-      setApproverID((current) => current || data[0]?.user_id || "");
+      setApproverID((current) => current || (!isSuperAdmin ? currentUserID || "" : data[0]?.user_id || ""));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load approvers.");
     } finally {
       setLoading(false);
     }
-  }, [basePath, canLoad]);
+  }, [basePath, canLoad, currentUserID, isSuperAdmin]);
 
   const loadApprovalContext = useCallback(async (items: Approval[]) => {
     const leaves = await Promise.all(items.map((item) => apiRequest<Leave>(`${basePath}/leaves/${item.leave_id}`).catch(() => null)));
@@ -103,14 +104,14 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
   }, [basePath]);
 
   const loadApprovals = useCallback(async () => {
-    if (!canLoad || !approverID) {
+    if (!canLoad || !effectiveApproverID) {
       setApprovals([]);
       return;
     }
     setError("");
     setLoading(true);
     try {
-      const items = await apiRequest<Approval[]>(`${basePath}/leave-approvals?approver_id=${approverID}`);
+      const items = await apiRequest<Approval[]>(`${basePath}/leave-approvals?approver_id=${effectiveApproverID}`);
       setApprovals(items);
       await loadApprovalContext(items);
     } catch (err) {
@@ -118,7 +119,7 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
     } finally {
       setLoading(false);
     }
-  }, [approverID, basePath, canLoad, loadApprovalContext]);
+  }, [basePath, canLoad, effectiveApproverID, loadApprovalContext]);
 
   const loadMessages = useCallback(async (leaveID: string) => {
     setDetailLoading(true);
@@ -154,7 +155,7 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
     setMessage("");
     setError("");
     try {
-      await apiRequest(`${basePath}/leave-approvals/${item.id}/approve`, { method: "POST", body: { approver_id: approverID, remarks: decisionRemarks || undefined } });
+      await apiRequest(`${basePath}/leave-approvals/${item.id}/approve`, { method: "POST", body: { approver_id: effectiveApproverID, remarks: decisionRemarks || undefined } });
       setSelectedApproval(null);
       setApprovals((items) => items.filter((approval) => approval.id !== item.id));
       setMessage("Leave approval completed.");
@@ -167,7 +168,7 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
     setMessage("");
     setError("");
     try {
-      await apiRequest(`${basePath}/leave-approvals/${item.id}/reject`, { method: "POST", body: { approver_id: approverID, remarks: decisionRemarks || "Rejected" } });
+      await apiRequest(`${basePath}/leave-approvals/${item.id}/reject`, { method: "POST", body: { approver_id: effectiveApproverID, remarks: decisionRemarks || "Rejected" } });
       setSelectedApproval(null);
       setApprovals((items) => items.filter((approval) => approval.id !== item.id));
       setMessage("Leave request rejected and pending balance released.");
@@ -220,7 +221,8 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <select className="h-11 rounded-xl border border-[#dbe8e1] bg-white px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setApproverID(e.target.value)} value={approverID}>
-              <option value="">Select approver</option>
+              <option value="">{isSuperAdmin ? "Select approver" : "My approval queue"}</option>
+              {currentUserID && !employees.some((item) => item.user_id === currentUserID) ? <option value={currentUserID}>Current user</option> : null}
               {employees.map((item) => <option key={item.user_id} value={item.user_id}>{employeeLabel(item)}</option>)}
             </select>
             <button className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#d9e3dc] bg-white px-4 py-3 text-sm font-extrabold text-[#17231a] shadow-[0_10px_28px_rgba(24,37,27,0.08)]" disabled={loading} onClick={loadApprovals} type="button">
@@ -294,8 +296,8 @@ export function LeaveApprovalsSection({ isSuperAdmin, tenants, tenantsLoading, t
               </div>
               <div className="max-h-56 space-y-3 overflow-y-auto pr-1">
                 {messages.map((item) => (
-                  <div className={`rounded-xl p-3 ${item.sender_user_id === approverID ? "bg-[#eef4f1]" : "bg-[#f8fbf8]"}`} key={item.id}>
-                    <p className="text-xs font-black uppercase tracking-wide text-[#588368]">{item.sender_user_id === approverID ? "Manager" : "Employee"} · {formatDate(item.created_at)}</p>
+                  <div className={`rounded-xl p-3 ${item.sender_user_id === effectiveApproverID ? "bg-[#eef4f1]" : "bg-[#f8fbf8]"}`} key={item.id}>
+                    <p className="text-xs font-black uppercase tracking-wide text-[#588368]">{item.sender_user_id === effectiveApproverID ? "Manager" : "Employee"} · {formatDate(item.created_at)}</p>
                     <p className="mt-1 text-sm font-semibold leading-6 text-[#17231a]">{item.body}</p>
                   </div>
                 ))}
