@@ -94,6 +94,7 @@ export function LeaveApprovalsSection({ currentUserID, isSuperAdmin, tenants, te
         start_day_type: leave.start_day_type,
         end_day_type: leave.end_day_type,
         reason: leave.reason || undefined,
+        exclude_leave_id: leave.id,
       },
     }).then((preview) => [leave.id, preview] as const).catch(() => null)));
     const nextPreviews: Record<string, LeavePreview> = {};
