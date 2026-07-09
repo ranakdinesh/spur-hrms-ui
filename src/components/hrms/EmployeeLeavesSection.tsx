@@ -80,37 +80,41 @@ function LeavePreviewPanel({ preview }: { preview: LeavePreview | null }) {
   const blockingReasons = preview.blocking_reasons || [];
   const warnings = preview.warnings || [];
   return (
-    <div className={`rounded-xl border px-4 py-3 ${preview.allowed ? "border-emerald-100 bg-emerald-50" : "border-red-100 bg-red-50"}`}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className={`text-sm font-black ${preview.allowed ? "text-emerald-800" : "text-red-800"}`}>{preview.allowed ? "Ready to submit" : "Cannot submit yet"}</p>
-          <p className="mt-1 text-xs font-bold text-[#6b7280]">Policy preview from current leave rules</p>
-        </div>
-        <span className={`rounded-full bg-white px-3 py-1 text-xs font-black ${preview.allowed ? "text-emerald-700" : "text-red-700"}`}>{formatDays(preview.total_days)} day{preview.total_days === 1 ? "" : "s"}</span>
+    <div className={`rounded-xl border p-4 ${preview.allowed ? "border-emerald-100 bg-emerald-50" : "border-red-100 bg-red-50"}`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className={`text-sm font-black ${preview.allowed ? "text-emerald-800" : "text-red-800"}`}>{preview.allowed ? "Ready to submit" : "Cannot submit yet"}</p>
+        <span className={`shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black ${preview.allowed ? "text-emerald-700" : "text-red-700"}`}>{formatDays(preview.total_days)} days</span>
       </div>
-      <div className="mt-3 grid gap-2 text-xs font-bold text-[#374151] sm:grid-cols-3">
-        <span>Base {formatDays(preview.base_days)}</span>
-        <span>Sandwich {formatDays(preview.sandwich_days)}</span>
-        <span>After balance {formatDays(preview.balance_after)}</span>
-      </div>
-      <div className="mt-3 grid gap-2 text-xs font-bold text-[#6b7280] sm:grid-cols-2">
-        <span>Pending after {formatDays(preview.pending_after)}</span>
-        <span>{preview.paid_leave ? "Paid leave" : "Unpaid leave"}</span>
-        {preview.requires_attachment ? <span>Attachment required</span> : null}
-        {preview.notice_required ? <span>Notice {preview.notice_days} day{preview.notice_days === 1 ? "" : "s"}</span> : null}
-        {preview.payroll_impact ? <span>Payroll: {preview.payroll_impact}</span> : null}
-        {preview.effective_policy?.name ? <span>Policy: {preview.effective_policy.name}</span> : null}
-      </div>
+      <dl className="mt-3 divide-y divide-white/70 text-sm">
+        <PreviewRow label="Base days" value={formatDays(preview.base_days)} />
+        <PreviewRow label="Sandwich days" value={formatDays(preview.sandwich_days)} />
+        <PreviewRow label="Balance after request" value={formatDays(preview.balance_after)} />
+        <PreviewRow label="Pending after request" value={formatDays(preview.pending_after)} />
+        <PreviewRow label="Leave pay type" value={preview.paid_leave ? "Paid" : "Unpaid"} />
+        {preview.requires_attachment ? <PreviewRow label="Attachment" value="Required" /> : null}
+        {preview.notice_required ? <PreviewRow label="Notice" value={`${preview.notice_days} day${preview.notice_days === 1 ? "" : "s"}`} /> : null}
+        {preview.payroll_impact ? <PreviewRow label="Payroll impact" value={preview.payroll_impact} /> : null}
+        {preview.effective_policy?.name ? <PreviewRow label="Policy" value={preview.effective_policy.name} /> : null}
+      </dl>
       {blockingReasons.length > 0 ? (
-        <ul className="mt-3 space-y-1 text-sm font-bold text-red-800">
+        <ul className="mt-3 space-y-1 text-sm font-bold leading-6 text-red-800">
           {blockingReasons.map((item) => <li key={item}>{item}</li>)}
         </ul>
       ) : null}
       {warnings.length > 0 ? (
-        <ul className="mt-3 space-y-1 text-sm font-bold text-amber-800">
+        <ul className="mt-3 space-y-1 text-sm font-bold leading-6 text-amber-800">
           {warnings.map((item) => <li key={item}>{item}</li>)}
         </ul>
       ) : null}
+    </div>
+  );
+}
+
+function PreviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-1 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <dt className="text-[#647067] sm:shrink-0">{label}</dt>
+      <dd className="min-w-0 break-words font-black text-[#17231a] sm:max-w-[58%] sm:text-right">{value}</dd>
     </div>
   );
 }
@@ -408,27 +412,44 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             </div>
             {selectedBalance ? <span className="rounded-full bg-[#e9f7ee] px-3 py-1 text-xs font-black text-[#237344]">{formatDays(selectedBalance.balance_days)} available</span> : null}
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {visibleBalances.map((item) => {
-              const active = form.leave_type_id === item.leave_type_id;
-              const usedPercent = item.total_days > 0 ? Math.min(100, Math.max(0, (item.used_days / item.total_days) * 100)) : 0;
-              return (
-                <button className={`rounded-xl border p-4 text-left transition ${active ? "border-[#588368] bg-[#eef4f1] shadow-sm" : "border-[#dfe7df] bg-[#fbfdfb] hover:border-[#b7c8bd] hover:bg-white"}`} key={item.id || item.leave_type_id} onClick={() => setForm((current) => ({ ...current, leave_type_id: item.leave_type_id }))} type="button">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="min-w-0 truncate text-sm font-black text-[#121a14]">{item.leave_type_name || leaveTypeName(item.leave_type_id)}</p>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-[#237344]">{formatDays(item.balance_days)}</span>
+          <div className="mt-4 overflow-hidden rounded-xl border border-[#edf2ee]">
+            <table className="hidden w-full text-left md:table">
+              <thead className="bg-[#f8fbf8] text-xs font-black uppercase tracking-wide text-[#647067]">
+                <tr>
+                  <th className="px-4 py-3">Leave Type</th>
+                  <th className="px-4 py-3 text-right">Available</th>
+                  <th className="px-4 py-3 text-right">Used</th>
+                  <th className="px-4 py-3 text-right">Pending</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#edf2ee]">
+                {visibleBalances.map((item) => (
+                  <tr className={form.leave_type_id === item.leave_type_id ? "bg-[#eef4f1]" : "bg-white"} key={item.id || item.leave_type_id}>
+                    <td className="px-4 py-3 text-sm font-black text-[#121a14]">{item.leave_type_name || leaveTypeName(item.leave_type_id)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-black text-[#237344]">{formatDays(item.balance_days)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-[#647067]">{formatDays(item.used_days)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-[#647067]">{formatDays(item.pending_days)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-semibold text-[#647067]">{formatDays(item.total_days)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="divide-y divide-[#edf2ee] md:hidden">
+              {visibleBalances.map((item) => (
+                <div className={form.leave_type_id === item.leave_type_id ? "bg-[#eef4f1] p-4" : "bg-white p-4"} key={item.id || item.leave_type_id}>
+                  <div className="flex items-start justify-between gap-4">
+                    <p className="min-w-0 text-sm font-black leading-5 text-[#121a14]">{item.leave_type_name || leaveTypeName(item.leave_type_id)}</p>
+                    <p className="shrink-0 text-sm font-black text-[#237344]">{formatDays(item.balance_days)}</p>
                   </div>
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#eef2ee]">
-                    <span className="block h-full rounded-full bg-[#588368]" style={{ width: `${usedPercent}%` }} />
-                  </div>
-                  <div className="mt-2 flex justify-between gap-2 text-[11px] font-bold text-[#647067]">
-                    <span>Used {formatDays(item.used_days)}</span>
-                    <span>Pending {formatDays(item.pending_days)}</span>
-                    <span>Total {formatDays(item.total_days)}</span>
-                  </div>
-                </button>
-              );
-            })}
+                  <dl className="mt-3 grid grid-cols-3 gap-3 text-xs">
+                    <div><dt className="text-[#647067]">Used</dt><dd className="mt-1 font-black text-[#17231a]">{formatDays(item.used_days)}</dd></div>
+                    <div><dt className="text-[#647067]">Pending</dt><dd className="mt-1 font-black text-[#17231a]">{formatDays(item.pending_days)}</dd></div>
+                    <div><dt className="text-[#647067]">Total</dt><dd className="mt-1 font-black text-[#17231a]">{formatDays(item.total_days)}</dd></div>
+                  </dl>
+                </div>
+              ))}
+            </div>
           </div>
           {visibleBalances.length === 0 ? <p className="mt-4 rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-semibold text-[#647067]">No leave balance is available yet.</p> : null}
         </section>
@@ -446,10 +467,10 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
               <article className="rounded-xl border border-[#edf1ef] bg-[#fbfdfb] p-4" key={item.id}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-[#121a14]">{leaveTypeName(item.leave_type_id)}</p>
-                    <p className="mt-1 text-xs font-bold text-[#647067]">{formatDate(item.start_date)} - {formatDate(item.end_date)} · {formatDays(item.days)} day{item.days === 1 ? "" : "s"}</p>
+                    <p className="text-sm font-black leading-5 text-[#121a14]">{leaveTypeName(item.leave_type_id)}</p>
+                    <p className="mt-1 text-xs font-bold leading-5 text-[#647067]">{formatDate(item.start_date)} - {formatDate(item.end_date)} · {formatDays(item.days)} day{item.days === 1 ? "" : "s"}</p>
                   </div>
-                  <span className="rounded-full bg-[#e9f7ee] px-3 py-1 text-xs font-black capitalize text-[#237344]">{item.status}</span>
+                  <span className="shrink-0 rounded-full bg-[#e9f7ee] px-3 py-1 text-xs font-black capitalize text-[#237344]">{item.status}</span>
                 </div>
                 {item.reason ? <p className="mt-3 text-sm text-[#647067]">{item.reason}</p> : null}
                 {item.status === "pending" ? (
@@ -480,22 +501,18 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             </div>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            {leaveOptions.map((item) => {
-              const balance = balanceByTypeID.get(item.id);
-              const selected = form.leave_type_id === item.id;
-              const blocked = probationBlocked && isEarnedLeave(item);
-              return (
-                <button className={`rounded-2xl border p-4 text-left transition ${selected ? "border-[#588368] bg-[#eef4f1] shadow-sm" : "border-[#edf1ef] bg-white hover:border-[#b7c8bd]"} ${blocked ? "cursor-not-allowed opacity-60" : ""}`} disabled={blocked} key={item.id} onClick={() => setForm((current) => ({ ...current, leave_type_id: item.id }))} type="button">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="min-w-0 truncate text-sm font-black text-[#111827]">{item.name}</p>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-[#588368]">{balance ? formatDays(balance.balance_days) : "-"}</span>
-                  </div>
-                  <p className="mt-2 text-xs font-bold text-[#6b7280]">{blocked ? "Blocked during probation" : `Used ${formatDays(balance?.used_days || 0)} / Total ${formatDays(balance?.total_days || 0)}`}</p>
-                </button>
-              );
-            })}
-          </div>
+          <label className="grid gap-2 text-sm font-black text-[#374151]">
+            Leave type
+            <select className="h-12 rounded-xl border border-[#dbe8e1] bg-white px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(event) => setForm((current) => ({ ...current, leave_type_id: event.target.value }))} required value={form.leave_type_id}>
+              <option value="">Select leave type</option>
+              {leaveOptions.map((item) => {
+                const balance = balanceByTypeID.get(item.id);
+                const blocked = probationBlocked && isEarnedLeave(item);
+                const label = `${item.name}${balance ? ` - ${formatDays(balance.balance_days)} available` : ""}${blocked ? " - blocked during probation" : ""}`;
+                return <option disabled={blocked} key={item.id} value={item.id}>{label}</option>;
+              })}
+            </select>
+          </label>
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-2 text-sm font-black text-[#374151]">
@@ -543,11 +560,11 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             {previewLoading ? <p className="rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-semibold text-[#647067]">Calculating policy impact...</p> : null}
             <LeavePreviewPanel preview={currentPreview} />
             {!currentPreview && !previewLoading ? (
-              <div className="grid gap-3 rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-bold text-[#374151] sm:grid-cols-3">
-                <span>Estimated {estimatedDays ? formatDays(estimatedDays) : "-"} day{estimatedDays === 1 ? "" : "s"}</span>
-                <span>Balance {selectedBalance ? formatDays(selectedBalance.balance_days) : "-"}</span>
-                <span>Preview appears after dates</span>
-              </div>
+              <dl className="divide-y divide-[#edf2ee] rounded-xl bg-[#f8fbf8] px-4 py-2 text-sm">
+                <PreviewRow label="Estimated days" value={`${estimatedDays ? formatDays(estimatedDays) : "-"} day${estimatedDays === 1 ? "" : "s"}`} />
+                <PreviewRow label="Available balance" value={selectedBalance ? formatDays(selectedBalance.balance_days) : "-"} />
+                <PreviewRow label="Policy impact" value="Appears after dates" />
+              </dl>
             ) : null}
           </div>
 
