@@ -14,14 +14,9 @@ type LeaveBalance = { id?: string; leave_type_id: string; leave_type_name?: stri
 type Leave = { id: string; user_id: string; leave_type_id: string; fy_id: string; start_date: string; end_date: string; start_day_type: DayType; end_day_type: DayType; days: number; reason?: string | null; status: string; is_sandwich: boolean; applied_date: string };
 type EmployeeDashboard = { leave?: { balances: Array<LeaveBalance & { leave_type_name: string }>; recent_requests: Leave[] } | null };
 type LeavePreview = { allowed: boolean; total_days: number; base_days: number; sandwich_days: number; is_sandwich: boolean; balance_before: number; balance_after: number; pending_after: number; paid_leave: boolean; blocking_reasons?: string[]; warnings?: string[]; requires_attachment: boolean; notice_required: boolean; notice_days: number; payroll_impact?: string; effective_policy?: { name: string; code: string } | null };
+type LeaveMessage = { id: string; sender_user_id: string; message_type: string; body: string; created_at: string };
 type DayType = "fullday" | "firsthalf" | "secondhalf";
-type DurationMode = "full" | "firsthalf" | "secondhalf" | "custom";
-
-const dayTypeLabels: Record<DayType, string> = {
-  firsthalf: "First half",
-  fullday: "Full day",
-  secondhalf: "Second half",
-};
+type DurationMode = "full" | "half";
 
 function employeeLabel(item?: Employee) {
   if (!item) return "-";
@@ -30,19 +25,6 @@ function employeeLabel(item?: Employee) {
 
 function tenantSortValue(tenant: BranchTenantOption) {
   return `${tenant.name} ${tenant.code}`.toLowerCase();
-}
-
-function isEmployeeOnProbation(employee?: Employee) {
-  if (!employee || !["probation", "extended"].includes(employee.probation_status || "")) return false;
-  if (!employee.probation_end_date) return true;
-  const end = new Date(employee.probation_end_date);
-  return Number.isNaN(end.getTime()) || end >= new Date();
-}
-
-function isEarnedLeave(type: LeaveType) {
-  const shortcode = (type.shortcode || "").trim().toLowerCase();
-  const name = type.name.trim().toLowerCase();
-  return shortcode === "el" || shortcode === "earnleave" || name.includes("earned leave") || name.includes("earn leave");
 }
 
 function formatDate(value?: string | null) {
@@ -79,11 +61,13 @@ function LeavePreviewPanel({ preview }: { preview: LeavePreview | null }) {
   if (!preview) return null;
   const blockingReasons = preview.blocking_reasons || [];
   const warnings = preview.warnings || [];
+  const hasWarnings = warnings.length > 0 || blockingReasons.length > 0;
+  const tone = !preview.allowed ? "red" : hasWarnings ? "amber" : "emerald";
   return (
-    <div className={`rounded-xl border p-4 ${preview.allowed ? "border-emerald-100 bg-emerald-50" : "border-red-100 bg-red-50"}`}>
+    <div className={`rounded-xl border p-4 ${tone === "red" ? "border-red-100 bg-red-50" : tone === "amber" ? "border-amber-100 bg-amber-50" : "border-emerald-100 bg-emerald-50"}`}>
       <div className="flex items-center justify-between gap-3">
-        <p className={`text-sm font-black ${preview.allowed ? "text-emerald-800" : "text-red-800"}`}>{preview.allowed ? "Ready to submit" : "Cannot submit yet"}</p>
-        <span className={`shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black ${preview.allowed ? "text-emerald-700" : "text-red-700"}`}>{formatDays(preview.total_days)} days</span>
+        <p className={`text-sm font-black ${tone === "red" ? "text-red-800" : tone === "amber" ? "text-amber-800" : "text-emerald-800"}`}>{preview.allowed ? (hasWarnings ? "Review warning before submitting" : "No issues found") : "Cannot submit yet"}</p>
+        <span className={`shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black ${tone === "red" ? "text-red-700" : tone === "amber" ? "text-amber-700" : "text-emerald-700"}`}>{formatDays(preview.total_days)} days</span>
       </div>
       <dl className="mt-3 divide-y divide-white/70 text-sm">
         <PreviewRow label="Base days" value={formatDays(preview.base_days)} />
@@ -106,6 +90,7 @@ function LeavePreviewPanel({ preview }: { preview: LeavePreview | null }) {
           {warnings.map((item) => <li key={item}>{item}</li>)}
         </ul>
       ) : null}
+      {preview.allowed && hasWarnings ? <p className="mt-3 text-sm font-semibold leading-6 text-amber-800">You can still submit this request. Your manager will decide during approval.</p> : null}
     </div>
   );
 }
@@ -138,11 +123,13 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
   const [preview, setPreview] = useState<{ key: string; result: LeavePreview } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [cancelRemarks, setCancelRemarks] = useState<Record<string, string>>({});
+  const [messageLeave, setMessageLeave] = useState<Leave | null>(null);
+  const [leaveMessages, setLeaveMessages] = useState<LeaveMessage[]>([]);
+  const [leaveMessageBody, setLeaveMessageBody] = useState("");
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const selectedEmployee = useMemo(() => employees.find((item) => item.user_id === selectedUser), [employees, selectedUser]);
-  const probationBlocked = isSuperAdmin && isEmployeeOnProbation(selectedEmployee);
   const typeByID = useMemo(() => new Map(leaveTypes.map((item) => [item.id, item])), [leaveTypes]);
   const balanceByTypeID = useMemo(() => new Map(balances.map((item) => [item.leave_type_id, item])), [balances]);
   const selectedBalance = form.leave_type_id ? balanceByTypeID.get(form.leave_type_id) : undefined;
@@ -257,15 +244,13 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     setDurationMode(nextMode);
     setForm((current) => {
       if (nextMode === "full") return { ...current, start_day_type: "fullday", end_day_type: "fullday" };
-      if (nextMode === "firsthalf") return { ...current, end_date: current.start_date || current.end_date, start_day_type: "firsthalf", end_day_type: "firsthalf" };
-      if (nextMode === "secondhalf") return { ...current, end_date: current.start_date || current.end_date, start_day_type: "secondhalf", end_day_type: "secondhalf" };
-      return current;
+      return { ...current, end_date: current.start_date || current.end_date, start_day_type: current.start_day_type === "secondhalf" ? "secondhalf" : "firsthalf", end_day_type: current.start_day_type === "secondhalf" ? "secondhalf" : "firsthalf" };
     });
   }
 
   function setStartDate(value: string) {
     setForm((current) => {
-      const nextEndDate = durationMode === "firsthalf" || durationMode === "secondhalf" || !current.end_date || current.end_date < value ? value : current.end_date;
+      const nextEndDate = durationMode === "half" || !current.end_date || current.end_date < value ? value : current.end_date;
       return { ...current, start_date: value, end_date: nextEndDate };
     });
   }
@@ -284,7 +269,7 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     event.preventDefault();
     setMessage("");
     setError("");
-    if (!currentPreview?.allowed) {
+    if (currentPreview && !currentPreview.allowed) {
       setError("Preview the leave request and resolve any blocking items before submitting.");
       return;
     }
@@ -354,8 +339,42 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
     }
   }
 
+  async function openLeaveMessages(item: Leave) {
+    setMessageLeave(item);
+    setLeaveMessageBody("");
+    setMessage("");
+    setError("");
+    setMessagesLoading(true);
+    try {
+      setLeaveMessages(await apiRequest<LeaveMessage[]>(`${basePath}/leaves/${item.id}/messages`));
+    } catch (err) {
+      setLeaveMessages([]);
+      setError(err instanceof Error ? err.message : "Unable to load leave messages.");
+    } finally {
+      setMessagesLoading(false);
+    }
+  }
+
+  async function sendLeaveMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!messageLeave || !leaveMessageBody.trim()) return;
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`${basePath}/leaves/${messageLeave.id}/messages`, {
+        method: "POST",
+        body: { message_type: "employee_reply", body: leaveMessageBody.trim() },
+      });
+      setLeaveMessageBody("");
+      setLeaveMessages(await apiRequest<LeaveMessage[]>(`${basePath}/leaves/${messageLeave.id}/messages`));
+      setMessage("Reply sent.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to send reply.");
+    }
+  }
+
   const formReady = !loading && Boolean(form.leave_type_id && form.start_date && form.end_date) && (!isSuperAdmin || Boolean(selectedUser && selectedFY));
-  const submitDisabled = !formReady || previewLoading || !currentPreview?.allowed;
+  const submitDisabled = !formReady || previewLoading || currentPreview?.allowed === false;
 
   useEffect(() => {
     if (!applyOpen || !formReady || previewLoading || preview?.key === previewKey) return;
@@ -473,12 +492,15 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
                   <span className="shrink-0 rounded-full bg-[#e9f7ee] px-3 py-1 text-xs font-black capitalize text-[#237344]">{item.status}</span>
                 </div>
                 {item.reason ? <p className="mt-3 text-sm text-[#647067]">{item.reason}</p> : null}
-                {item.status === "pending" ? (
-                  <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-                    <input className="h-10 rounded-lg border border-[#dbe8e1] px-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setCancelRemarks((current) => ({ ...current, [item.id]: e.target.value }))} placeholder="Cancel reason" value={cancelRemarks[item.id] || ""} />
-                    <button className="rounded-lg border border-red-100 bg-red-50 px-4 py-2 text-xs font-black text-red-700" onClick={() => void cancelLeave(item)} type="button">Cancel</button>
-                  </div>
-                ) : null}
+                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                  {item.status === "pending" ? (
+                    <>
+                      <input className="h-10 rounded-lg border border-[#dbe8e1] px-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setCancelRemarks((current) => ({ ...current, [item.id]: e.target.value }))} placeholder="Cancel reason" value={cancelRemarks[item.id] || ""} />
+                      <button className="rounded-lg border border-red-100 bg-red-50 px-4 py-2 text-xs font-black text-red-700" onClick={() => void cancelLeave(item)} type="button">Cancel</button>
+                    </>
+                  ) : <span />}
+                  <button className="rounded-lg border border-[#dbe8e1] bg-white px-4 py-2 text-xs font-black text-[#588368]" onClick={() => void openLeaveMessages(item)} type="button">Messages</button>
+                </div>
               </article>
             ))}
           </div>
@@ -486,7 +508,7 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
         </section>
       </div>
 
-      <HrmsModal description="Select a leave type and date range. Setika calculates balance and policy impact automatically." onClose={closeApplyWizard} open={applyOpen} title="Apply Leave">
+      <HrmsModal description="Choose a leave type, day duration, and dates. Setika checks warnings before you submit." onClose={closeApplyWizard} open={applyOpen} title="Apply Leave">
         <form className="grid gap-5" onSubmit={submitLeave}>
           {isSuperAdmin ? (
             <div className="grid gap-3 md:grid-cols-2">
@@ -507,13 +529,23 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
               <option value="">Select leave type</option>
               {leaveOptions.map((item) => {
                 const balance = balanceByTypeID.get(item.id);
-                const blocked = probationBlocked && isEarnedLeave(item);
-                const label = `${item.name}${balance ? ` - ${formatDays(balance.balance_days)} available` : ""}${blocked ? " - blocked during probation" : ""}`;
-                return <option disabled={blocked} key={item.id} value={item.id}>{label}</option>;
+                const label = `${item.name}${balance ? ` - ${formatDays(balance.balance_days)} available` : ""}`;
+                return <option key={item.id} value={item.id}>{label}</option>;
               })}
             </select>
           </label>
 
+          <div className="grid gap-2">
+            <p className="text-sm font-black text-[#374151]">Day duration</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {[
+                ["full", "Full day"],
+                ["half", "Half day"],
+              ].map(([mode, label]) => <button className={`h-11 rounded-xl border px-3 text-sm font-black ${durationMode === mode ? "border-[#588368] bg-[#588368] text-white" : "border-[#dbe8e1] bg-white text-[#374151]"}`} key={mode} onClick={() => setDuration(mode as DurationMode)} type="button">{label}</button>)}
+            </div>
+          </div>
+
+          {durationMode === "full" ? (
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-2 text-sm font-black text-[#374151]">
               From
@@ -521,49 +553,35 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             </label>
             <label className="grid gap-2 text-sm font-black text-[#374151]">
               To
-              <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" disabled={durationMode === "firsthalf" || durationMode === "secondhalf"} min={form.start_date || undefined} onChange={(e) => setForm((current) => ({ ...current, end_date: e.target.value }))} required type="date" value={form.end_date} />
+              <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" min={form.start_date || undefined} onChange={(e) => setForm((current) => ({ ...current, end_date: e.target.value }))} required type="date" value={form.end_date} />
             </label>
           </div>
-
-          <div className="grid gap-2">
-            <p className="text-sm font-black text-[#374151]">Duration</p>
-            <div className="grid gap-2 sm:grid-cols-4">
-              {[
-                ["full", "Full day"],
-                ["firsthalf", "First half"],
-                ["secondhalf", "Second half"],
-                ["custom", "Custom"],
-              ].map(([mode, label]) => <button className={`h-11 rounded-xl border px-3 text-sm font-black ${durationMode === mode ? "border-[#588368] bg-[#588368] text-white" : "border-[#dbe8e1] bg-white text-[#374151]"}`} key={mode} onClick={() => setDuration(mode as DurationMode)} type="button">{label}</button>)}
-            </div>
-          </div>
-
-          {durationMode === "custom" ? (
+          ) : (
             <div className="grid gap-3 md:grid-cols-2">
               <label className="grid gap-2 text-sm font-black text-[#374151]">
-                Start day
-                <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, start_day_type: e.target.value as DayType }))} value={form.start_day_type}>
-                  {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
-                </select>
+                Date
+                <input className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setStartDate(e.target.value)} required type="date" value={form.start_date} />
               </label>
               <label className="grid gap-2 text-sm font-black text-[#374151]">
-                End day
-                <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold" onChange={(e) => setForm((current) => ({ ...current, end_day_type: e.target.value as DayType }))} value={form.end_day_type}>
-                  {(Object.keys(dayTypeLabels) as DayType[]).map((item) => <option key={item} value={item}>{dayTypeLabels[item]}</option>)}
+                Half
+                <select className="h-12 rounded-xl border border-[#dbe8e1] px-4 text-sm font-bold outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, end_date: current.start_date || current.end_date, start_day_type: e.target.value as DayType, end_day_type: e.target.value as DayType }))} value={form.start_day_type === "secondhalf" ? "secondhalf" : "firsthalf"}>
+                  <option value="firsthalf">First half</option>
+                  <option value="secondhalf">Second half</option>
                 </select>
               </label>
             </div>
-          ) : null}
+          )}
 
           <textarea className="min-h-20 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(e) => setForm((current) => ({ ...current, reason: e.target.value }))} placeholder="Reason, optional" value={form.reason} />
 
           <div className="grid gap-3">
-            {previewLoading ? <p className="rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-semibold text-[#647067]">Calculating policy impact...</p> : null}
+            {previewLoading ? <p className="rounded-xl bg-[#f8fbf8] px-4 py-3 text-sm font-semibold text-[#647067]">Checking leave warnings...</p> : null}
             <LeavePreviewPanel preview={currentPreview} />
             {!currentPreview && !previewLoading ? (
               <dl className="divide-y divide-[#edf2ee] rounded-xl bg-[#f8fbf8] px-4 py-2 text-sm">
                 <PreviewRow label="Estimated days" value={`${estimatedDays ? formatDays(estimatedDays) : "-"} day${estimatedDays === 1 ? "" : "s"}`} />
                 <PreviewRow label="Available balance" value={selectedBalance ? formatDays(selectedBalance.balance_days) : "-"} />
-                <PreviewRow label="Policy impact" value="Appears after dates" />
+                <PreviewRow label="Warnings" value="Appear after dates" />
               </dl>
             ) : null}
           </div>
@@ -573,6 +591,34 @@ export function EmployeeLeavesSection({ isSuperAdmin, tenants, tenantsLoading, t
             <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={submitDisabled} type="submit">Submit leave request</button>
           </div>
         </form>
+      </HrmsModal>
+
+      <HrmsModal description="Messages stay attached to this leave request." onClose={() => setMessageLeave(null)} open={Boolean(messageLeave)} title="Leave Messages">
+        <div className="grid gap-4">
+          {messageLeave ? (
+            <section className="rounded-xl border border-[#e5ece7] bg-[#f8fbf8] p-4">
+              <p className="text-sm font-black text-[#121a14]">{leaveTypeName(messageLeave.leave_type_id)}</p>
+              <p className="mt-1 text-xs font-bold text-[#647067]">{formatDate(messageLeave.start_date)} - {formatDate(messageLeave.end_date)} · {formatDays(messageLeave.days)} day{messageLeave.days === 1 ? "" : "s"}</p>
+            </section>
+          ) : null}
+          <div className="max-h-64 space-y-3 overflow-y-auto pr-1">
+            {messagesLoading ? <p className="rounded-xl bg-[#f8fbf8] px-4 py-5 text-center text-sm font-semibold text-[#647067]">Loading messages...</p> : null}
+            {leaveMessages.map((item) => (
+              <div className="rounded-xl bg-[#f8fbf8] p-3" key={item.id}>
+                <p className="text-xs font-black uppercase tracking-wide text-[#588368]">{item.message_type === "employee_reply" ? "Employee" : "Manager"} · {formatDate(item.created_at)}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-[#17231a]">{item.body}</p>
+              </div>
+            ))}
+            {!messagesLoading && leaveMessages.length === 0 ? <p className="rounded-xl bg-[#f8fbf8] px-4 py-5 text-center text-sm font-semibold text-[#647067]">No messages yet.</p> : null}
+          </div>
+          <form className="grid gap-3 border-t border-[#edf1ef] pt-4" onSubmit={sendLeaveMessage}>
+            <textarea className="min-h-20 rounded-xl border border-[#dbe8e1] px-4 py-3 text-sm outline-none focus:border-[#588368]" onChange={(event) => setLeaveMessageBody(event.target.value)} placeholder="Reply to your manager" value={leaveMessageBody} />
+            <div className="flex justify-between gap-3">
+              <button className="rounded-xl border border-[#dbe8e1] bg-white px-4 py-3 text-sm font-black text-[#374151]" onClick={() => setMessageLeave(null)} type="button">Close</button>
+              <button className="rounded-xl bg-[#588368] px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={!leaveMessageBody.trim()} type="submit">Send Reply</button>
+            </div>
+          </form>
+        </div>
       </HrmsModal>
     </section>
   );

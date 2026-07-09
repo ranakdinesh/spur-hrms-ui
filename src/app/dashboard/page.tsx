@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   BarChart3,
+  Bell,
   BriefcaseBusiness,
   Building2,
   CalendarDays,
@@ -1080,6 +1081,7 @@ export default function DashboardPage() {
   const [permissions, setPermissions] = useState<IdentityPermission[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
   const [rolesError, setRolesError] = useState("");
+  const [notificationUnread, setNotificationUnread] = useState(0);
   const isSuperAdmin = Boolean(currentUser?.is_super_admin);
   const currentUserName = [currentUser?.first_name, currentUser?.last_name].filter(Boolean).join(" ").trim() || currentUser?.email || "User";
   const currentUserInitials = currentUserName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U";
@@ -1260,6 +1262,32 @@ export default function DashboardPage() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, [activeSection, currentUser, ready]);
+
+  useEffect(() => {
+    if (!ready || isSuperAdmin || !currentUser?.tenant_id) {
+      return;
+    }
+    let cancelled = false;
+    async function loadUnread() {
+      try {
+        const data = await apiRequest<{ unread: number }>("/hrms/notifications/unread-count");
+        if (!cancelled) setNotificationUnread(Number(data.unread) || 0);
+      } catch {
+        if (!cancelled) setNotificationUnread(0);
+      }
+    }
+    void loadUnread();
+    const interval = window.setInterval(() => void loadUnread(), 15000);
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void loadUnread();
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [currentUser?.tenant_id, isSuperAdmin, ready]);
 
   useEffect(() => {
     if (!ready || !isSuperAdmin) {
@@ -1472,6 +1500,20 @@ export default function DashboardPage() {
                 {action.icon}
               </button>
             ))}
+            {!isSuperAdmin && currentUser?.tenant_id ? (
+              <button
+                aria-label="Open notifications"
+                className={`relative flex h-[30px] w-[30px] items-center justify-center rounded-[5px] transition ${
+                  activeSection === "notification-inbox" ? "bg-[#eef4f1] text-[#588368]" : "hover:bg-[#f4fbf8] hover:text-[#111827]"
+                }`}
+                onClick={() => setActiveSection("notification-inbox")}
+                title="Notifications"
+                type="button"
+              >
+                <Bell className="h-4 w-4" />
+                {notificationUnread > 0 ? <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#e87839] px-1 text-[10px] font-black leading-none text-white">{notificationUnread > 9 ? "9+" : notificationUnread}</span> : null}
+              </button>
+            ) : null}
             <div className="relative">
               <button
                 aria-expanded={userMenuOpen}
