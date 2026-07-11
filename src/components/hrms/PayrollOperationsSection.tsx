@@ -22,8 +22,12 @@ type ReconcileRow = { employee_id: string; employee_code?: string | null; firstn
 type PayGroup = { id: string; code: string; name: string; description?: string | null; grouping_type: string; branch_id?: string | null; department_id?: string | null; employment_type_id?: string | null; reporting_tag?: string | null; is_active: boolean; employee_count?: number; members?: PayGroupMember[] };
 type PayGroupMember = { id: string; pay_group_id: string; user_id: string; membership_type: string; effective_from?: string | null; effective_to?: string | null };
 type PayGroupEmployee = { employee_id: string; user_id: string; employee_code?: string | null; firstname: string; lastname?: string | null; branch_name?: string | null; department_name?: string | null; employment_type_name?: string | null; match_source: string };
-type PayRunEmployee = { id: string; user_id: string; readiness_status: string; blocker_reason?: string | null; salary_slip_id?: string | null; employee_code?: string | null; firstname?: string | null; lastname?: string | null; branch_name?: string | null; department_name?: string | null };
+type PayRunEmployee = { id: string; user_id: string; readiness_status: string; blocker_reason?: string | null; salary_slip_id?: string | null; employee_code?: string | null; firstname?: string | null; lastname?: string | null; branch_name?: string | null; department_name?: string | null; gross_amount?: number; earnings_amount?: number; deductions_amount?: number; net_amount?: number };
 type PayRun = { id: string; pay_group_id: string; fy_id: string; month: number; year: number; status: string; employee_count: number; ready_count: number; blocked_count: number; generated_count: number; notes?: string | null; employees?: PayRunEmployee[] };
+type PayRunLedgerSummary = { pay_run_id: string; employee_count: number; draft_employee_count: number; gross_amount: number; total_earnings: number; total_deductions: number; net_amount: number; employer_cost_amount: number; input_count: number; component_count: number };
+type PayRunInput = { id: string; user_id: string; input_type: string; source_type: string; description: string; quantity?: number | null; amount?: number | null; employee_code?: string | null; firstname?: string | null; lastname?: string | null };
+type PayRunComponent = { id: string; user_id: string; component_type: string; code: string; name: string; amount: number; statutory?: boolean; employer_cost?: boolean; employee_code?: string | null; firstname?: string | null; lastname?: string | null };
+type PayRunCommandCenter = { run: PayRun; summary: PayRunLedgerSummary; inputs?: PayRunInput[]; components?: PayRunComponent[] };
 
 function nowMonth() { return new Date().getMonth() + 1; }
 function nowYear() { return new Date().getFullYear(); }
@@ -71,6 +75,8 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
   const [payRuns, setPayRuns] = useState<PayRun[]>([]);
   const [payGroupPreview, setPayGroupPreview] = useState<PayGroupEmployee[]>([]);
   const [selectedPayGroupID, setSelectedPayGroupID] = useState("");
+  const [selectedPayRunID, setSelectedPayRunID] = useState("");
+  const [commandCenter, setCommandCenter] = useState<PayRunCommandCenter | null>(null);
   const [payModal, setPayModal] = useState<"" | "group" | "member" | "run">("");
   const [selectedImport, setSelectedImport] = useState<ImportBatch | null>(null);
   const [csvText, setCsvText] = useState("employee_code,gross_salary\n");
@@ -99,12 +105,25 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
       apiRequest<PayRun[]>(`${basePath}/pay-runs?month=${month}&year=${year}`).catch(() => []),
     ]);
     setFys(fyRows); setTemplates(templateRows); setBranches(branchRows); setDepartments(departmentRows); setEmploymentTypes(employmentTypeRows); setEmployees(employeeRows); setLocks(lockRows); setRules(ruleRows); setImports(importRows); setSheet(sheetRows); setReconcile(reconcileRows); setPayGroups(payGroupRows); setPayRuns(payRunRows);
+    setSelectedPayRunID((current) => current || payRunRows[0]?.id || "");
     setImportForm((current) => ({ ...current, fy_id: current.fy_id || fyRows.find((item) => item.is_active)?.id || fyRows[0]?.id || "", template_id: current.template_id || templateRows.find((item) => item.is_active)?.id || templateRows[0]?.id || "" }));
     setPayRunForm((current) => ({ ...current, pay_group_id: current.pay_group_id || payGroupRows[0]?.id || "", fy_id: current.fy_id || fyRows.find((item) => item.is_active)?.id || fyRows[0]?.id || "", month: String(month), year: String(year) }));
     setMemberForm((current) => ({ ...current, pay_group_id: current.pay_group_id || payGroupRows[0]?.id || "" }));
   }, [basePath, month, year]);
 
   useEffect(() => { const timer = window.setTimeout(() => { void load().catch((err) => setError(err instanceof Error ? err.message : "Failed to load payroll operations.")); }, 0); return () => window.clearTimeout(timer); }, [load]);
+
+  const loadCommandCenter = useCallback(async (id: string) => {
+    if (!id) { setCommandCenter(null); return; }
+    setCommandCenter(await apiRequest<PayRunCommandCenter>(`${basePath}/pay-runs/${id}/command-center`));
+  }, [basePath]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadCommandCenter(selectedPayRunID).catch(() => setCommandCenter(null));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadCommandCenter, selectedPayRunID]);
 
   async function setLock(status: string) {
     setError(""); setNotice("");
@@ -175,10 +194,12 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
   async function createPayRun() {
     setError(""); setNotice("");
     try {
-      await apiRequest<PayRun>(`${basePath}/pay-runs`, { method: "POST", body: { pay_group_id: payRunForm.pay_group_id, fy_id: payRunForm.fy_id, month: Number(payRunForm.month), year: Number(payRunForm.year), notes: payRunForm.notes || null } });
+      const result = await apiRequest<PayRun>(`${basePath}/pay-runs`, { method: "POST", body: { pay_group_id: payRunForm.pay_group_id, fy_id: payRunForm.fy_id, month: Number(payRunForm.month), year: Number(payRunForm.year), notes: payRunForm.notes || null } });
       setNotice("Pay run created and readiness checked.");
+      setSelectedPayRunID(result.id);
       setPayModal("");
       await load();
+      await loadCommandCenter(result.id);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to create pay run."); }
   }
 
@@ -193,7 +214,9 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
     try {
       await apiRequest<PayRun>(`${basePath}/pay-runs/${id}/${action}`, { method: "POST", body: action === "generate" ? { regenerate: false } : {} });
       setNotice(`Pay run ${action} complete.`);
+      setSelectedPayRunID(id);
       await load();
+      await loadCommandCenter(id);
     } catch (err) { setError(err instanceof Error ? err.message : `Failed to ${action} pay run.`); }
   }
 
@@ -225,9 +248,10 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
           </div>
         </div>
         <div className="mt-5 overflow-x-auto rounded-xl border border-[#edf1ef]">
-          <table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-[#f8faf9] text-xs font-black uppercase text-[#6b7280]"><tr><th className="px-4 py-3">Pay Run</th><th>Group</th><th>Status</th><th>Ready</th><th>Blocked</th><th>Generated</th><th className="text-right pr-4">Actions</th></tr></thead><tbody className="divide-y divide-[#edf1ef]">{payRuns.length === 0 ? <tr><td className="px-4 py-5 text-sm font-semibold text-[#6b7280]" colSpan={7}>No pay runs for this period.</td></tr> : payRuns.map((run) => <tr key={run.id}><td className="px-4 py-3"><strong>{run.month}/{run.year}</strong><p className="text-xs font-bold text-[#6b7280]">{run.employee_count} employees</p></td><td>{payGroups.find((group) => group.id === run.pay_group_id)?.name || "-"}</td><td><span className={`rounded-full px-3 py-1 text-xs font-black ${badge(run.status)}`}>{run.status}</span></td><td>{run.ready_count}</td><td>{run.blocked_count}</td><td>{run.generated_count}</td><td className="pr-4 text-right"><div className="flex flex-wrap justify-end gap-2"><RunAction label="Assess" onClick={() => void payRunAction(run.id, "assess")} /><RunAction label="Freeze" onClick={() => void payRunAction(run.id, "freeze")} /><RunAction label="Generate" onClick={() => void payRunAction(run.id, "generate")} /><RunAction label={run.status === "locked" ? "Unlock" : "Lock"} onClick={() => void payRunAction(run.id, run.status === "locked" ? "unlock" : "lock")} /></div></td></tr>)}</tbody></table>
+          <table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-[#f8faf9] text-xs font-black uppercase text-[#6b7280]"><tr><th className="px-4 py-3">Pay Run</th><th>Group</th><th>Status</th><th>Ready</th><th>Blocked</th><th>Generated</th><th className="text-right pr-4">Actions</th></tr></thead><tbody className="divide-y divide-[#edf1ef]">{payRuns.length === 0 ? <tr><td className="px-4 py-5 text-sm font-semibold text-[#6b7280]" colSpan={7}>No pay runs for this period.</td></tr> : payRuns.map((run) => <tr className={selectedPayRunID === run.id ? "bg-[#f8faf9]" : ""} key={run.id}><td className="px-4 py-3"><strong>{run.month}/{run.year}</strong><p className="text-xs font-bold text-[#6b7280]">{run.employee_count} employees</p></td><td>{payGroups.find((group) => group.id === run.pay_group_id)?.name || "-"}</td><td><span className={`rounded-full px-3 py-1 text-xs font-black ${badge(run.status)}`}>{run.status}</span></td><td>{run.ready_count}</td><td>{run.blocked_count}</td><td>{run.generated_count}</td><td className="pr-4 text-right"><div className="flex flex-wrap justify-end gap-2"><RunAction label="Review" onClick={() => setSelectedPayRunID(run.id)} /><RunAction label="Assess" onClick={() => void payRunAction(run.id, "assess")} /><RunAction label="Freeze" onClick={() => void payRunAction(run.id, "freeze")} /><RunAction label="Generate" onClick={() => void payRunAction(run.id, "generate")} /><RunAction label={run.status === "locked" ? "Unlock" : "Lock"} onClick={() => void payRunAction(run.id, run.status === "locked" ? "unlock" : "lock")} /></div></td></tr>)}</tbody></table>
         </div>
       </Panel>
+      <PayrollCommandCenterPanel center={commandCenter} onAction={(id, action) => void payRunAction(id, action)} payGroups={payGroups} />
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-4">
           <Panel title="Consolidated Salary Sheet"><div className="mb-3 flex flex-wrap gap-2"><button className="rounded-lg border border-[#dbe0e5] px-3 py-2 text-xs font-black" onClick={() => void exportSheet("csv")} type="button">CSV</button><button className="rounded-lg border border-[#588368] px-3 py-2 text-xs font-black text-[#588368]" onClick={() => void exportSheet("pdf")} type="button">PDF</button><button className="rounded-lg border border-[#2f6f7d] px-3 py-2 text-xs font-black text-[#2f6f7d]" onClick={() => void exportSheet("xlsx")} type="button">Excel</button></div><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left text-sm"><thead className="bg-[#f8faf9] text-xs font-black uppercase text-[#6b7280]"><tr><th className="px-4 py-3">Employee</th><th>Branch</th><th>Gross</th><th>Earnings</th><th>Deductions</th><th>LOP</th><th>Net</th></tr></thead><tbody className="divide-y divide-[#edf1ef]">{sheet.map((row) => <tr key={row.salary_slip_id}><td className="px-4 py-3"><strong>{name(row.firstname, row.lastname)}</strong><p className="text-xs font-bold text-[#6b7280]">{row.employee_code || "-"}</p></td><td>{row.branch_name || "-"}</td><td>{money(row.gross_salary)}</td><td>{money(row.total_earnings)}</td><td>{money(row.total_deductions)}</td><td>{row.lwp_days}</td><td className="font-black">{money(row.net_salary)}</td></tr>)}</tbody></table></div></Panel>
@@ -274,6 +298,44 @@ function PayrollOpsWorkspace({ isSuperAdmin, tenant, onBack }: { isSuperAdmin: b
 
 function Metric({ label, value }: { label: string; value: string | number }) {
   return <div className="rounded-2xl border border-[#edf1ef] bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-[#6b7280]">{label}</p><strong className="mt-3 block text-3xl text-[#111827]">{value}</strong></div>;
+}
+
+function PayrollCommandCenterPanel({ center, payGroups, onAction }: { center: PayRunCommandCenter | null; payGroups: PayGroup[]; onAction: (id: string, action: "assess" | "freeze" | "generate" | "lock" | "unlock") => void }) {
+  if (!center?.run) {
+    return <Panel title="Payroll Command Center"><div className="rounded-xl border border-dashed border-[#dbe0e5] px-4 py-8 text-center text-sm font-semibold text-[#6b7280]">Create or select a pay run to review payroll readiness and draft ledger.</div></Panel>;
+  }
+  const run = center.run;
+  const summary = center.summary;
+  const components = center.components || [];
+  const inputs = center.inputs || [];
+  const employees = run.employees || [];
+  return (
+    <Panel title="Payroll Command Center">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-black text-[#111827]">{payGroups.find((group) => group.id === run.pay_group_id)?.name || "Selected pay run"}</h3><span className={`rounded-full px-3 py-1 text-xs font-black ${badge(run.status)}`}>{run.status}</span></div><p className="mt-1 text-xs font-bold text-[#6b7280]">{run.month}/{run.year} · {run.employee_count} employees · {summary?.component_count || 0} ledger rows</p></div>
+        <div className="flex flex-wrap gap-2"><RunAction label="Assess" onClick={() => onAction(run.id, "assess")} /><RunAction label="Freeze" onClick={() => onAction(run.id, "freeze")} /><RunAction label="Generate" onClick={() => onAction(run.id, "generate")} /><RunAction label={run.status === "locked" ? "Unlock" : "Lock"} onClick={() => onAction(run.id, run.status === "locked" ? "unlock" : "lock")} /></div>
+      </div>
+      <div className="mt-5 grid gap-3 md:grid-cols-5"><MiniMetric label="Draft Employees" value={summary?.draft_employee_count ?? 0} /><MiniMetric label="Gross" value={money(summary?.gross_amount)} /><MiniMetric label="Deductions" value={money(summary?.total_deductions)} /><MiniMetric label="Net" value={money(summary?.net_amount)} /><MiniMetric label="Blocked" value={run.blocked_count} /></div>
+      <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="overflow-hidden rounded-xl border border-[#edf1ef]">
+          <div className="bg-[#f8faf9] px-4 py-3 text-sm font-black text-[#111827]">Employee Readiness</div>
+          <div className="max-h-80 overflow-auto divide-y divide-[#edf1ef]">{employees.length === 0 ? <Empty text="Assess the run to populate employee readiness." /> : employees.map((employee) => <div className="grid gap-2 px-4 py-3 md:grid-cols-[1fr_auto_auto] md:items-center" key={employee.id}><div><strong className="text-sm text-[#111827]">{name(employee.firstname || "", employee.lastname)}</strong><p className="text-xs font-bold text-[#6b7280]">{employee.employee_code || "-"} · {employee.department_name || "-"}</p>{employee.blocker_reason ? <p className="mt-1 text-xs font-bold text-[#b91c1c]">{employee.blocker_reason}</p> : null}</div><span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${badge(employee.readiness_status)}`}>{employee.readiness_status}</span><strong className="text-sm text-[#111827]">{money(employee.net_amount)}</strong></div>)}</div>
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-[#edf1ef]">
+          <table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-[#f8faf9] text-xs font-black uppercase text-[#6b7280]"><tr><th className="px-4 py-3">Employee</th><th>Component</th><th>Type</th><th>Amount</th></tr></thead><tbody className="divide-y divide-[#edf1ef]">{components.length === 0 ? <tr><td className="px-4 py-5 text-sm font-semibold text-[#6b7280]" colSpan={4}>No draft ledger yet.</td></tr> : components.slice(0, 80).map((item) => <tr key={item.id}><td className="px-4 py-3"><strong>{name(item.firstname || "", item.lastname)}</strong><p className="text-xs font-bold text-[#6b7280]">{item.employee_code || "-"}</p></td><td>{item.name}<p className="text-xs font-bold text-[#6b7280]">{item.code}{item.statutory ? " · statutory" : ""}</p></td><td>{item.component_type}</td><td className="font-black">{money(item.amount)}</td></tr>)}</tbody></table>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{inputs.slice(0, 9).map((item) => <div className="rounded-xl border border-[#edf1ef] p-4" key={item.id}><div className="flex items-start justify-between gap-3"><strong className="text-sm text-[#111827]">{item.description}</strong><span className="rounded-full bg-[#eef4f1] px-3 py-1 text-xs font-black text-[#588368]">{item.input_type}</span></div><p className="mt-2 text-xs font-bold text-[#6b7280]">{name(item.firstname || "", item.lastname)} · {item.employee_code || "-"}</p><p className="mt-2 text-sm font-black text-[#111827]">{item.amount == null ? "-" : money(item.amount)}</p></div>)}</div>
+    </Panel>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string | number }) {
+  return <div className="rounded-xl border border-[#edf1ef] bg-[#f8faf9] px-4 py-3"><p className="text-[11px] font-black uppercase tracking-wide text-[#6b7280]">{label}</p><strong className="mt-1 block text-lg text-[#111827]">{value}</strong></div>;
+}
+
+function Empty({ text }: { text: string }) {
+  return <div className="px-4 py-5 text-sm font-semibold text-[#6b7280]">{text}</div>;
 }
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
